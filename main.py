@@ -2,6 +2,7 @@ import sys
 import json
 import time
 import math
+import bisect
 import multiprocessing
 import numpy as np
 import pygame
@@ -27,9 +28,9 @@ COMMANDS   = settings.get("commands", {})
 # ==========================================
 # 2. CONSTANTES VISUALES — "STAR CANDY ADVENTURES"
 # ==========================================
-WIDTH, HEIGHT  = 800, 450
+WIDTH, HEIGHT  = 1280, 720
 FPS            = 60
-GROUND_Y       = HEIGHT - 65
+GROUND_Y       = HEIGHT - 100   # suelo mas bajo proporcional a 720p
 DEBOUNCE_SECS  = 1.5
 
 # Paleta Espacial-Dulce (tonos pastel cósmicos)
@@ -81,30 +82,10 @@ def _lerp_color(c1, c2, t):
         int(c1[2] + (c2[2] - c1[2]) * t),
     )
 
-def _draw_platform(surf, rect):
-    """Dibuja plataforma estilo ciberpunk-cian sobre un Surface."""
-    # Cuerpo principal
-    pygame.draw.rect(surf, C_PLATFORM, rect, border_radius=4)
-    # Borde superior iluminado (luz cenital)
-    pygame.draw.rect(surf, C_PLAT_LIGHT,
-                     (rect.x, rect.y, rect.width, 5), border_radius=4)
-    # Sombra inferior
-    pygame.draw.rect(surf, C_PLAT_DARK,
-                     (rect.x, rect.bottom - 4, rect.width, 4), border_radius=2)
-    # Separadores de ladrillo verticales
-    brick_w = 38
-    for bx in range(rect.x + brick_w, rect.right, brick_w):
-        pygame.draw.line(surf, C_PLAT_DARK,
-                         (bx, rect.y + 5), (bx, rect.bottom - 4), 1)
-    # Destello especular pequeño (fake 3D)
-    pygame.draw.ellipse(surf, (240, 255, 255),
-                        (rect.x + 8, rect.y + 1, 28, 3))
-
-
-def build_background(width, height, ground_y, platforms):
+def build_background(width, height, ground_y):
     """
-    Renderiza UNA SOLA VEZ el escenario completo.
-    En el loop principal solo se hace screen.blit(bg_surface, (0,0)).
+    Renderiza UNA SOLA VEZ el escenario del cielo (parallax lejano).
+    En el loop principal se dibuja dos veces para efecto de scroll infinito continuo.
     """
     surf = pygame.Surface((width, height))
 
@@ -127,66 +108,157 @@ def build_background(width, height, ground_y, platforms):
     pygame.draw.ellipse(neb2, C_NEBULA_B, neb2.get_rect())
     surf.blit(neb2, (480, 60))
 
-    # ── Estrellas de dos tonos, tamaños variados ─────────────────────────────
+    # ── Estrellas Artísticas HD (componentes estrella 1-4) ────────────────────
     import random
     rng = random.Random(42)
-    for _ in range(110):
-        sx  = rng.randint(0, width)
-        sy  = rng.randint(0, ground_y - 80)
-        sr  = rng.randint(1, 3)
-        col = C_STAR if rng.random() > 0.35 else C_STAR_BLUE
-        pygame.draw.circle(surf, col, (sx, sy), sr)
-    # Estrellas grandes con cruz de destello
-    for _ in range(8):
-        sx = rng.randint(20, width - 20)
-        sy = rng.randint(10, ground_y - 80)
-        br = rng.randint(2, 4)
-        pygame.draw.circle(surf, C_STAR, (sx, sy), br)
-        pygame.draw.line(surf, C_STAR, (sx - br*2, sy), (sx + br*2, sy), 1)
-        pygame.draw.line(surf, C_STAR, (sx, sy - br*2), (sx, sy + br*2), 1)
+    try:
+        stars_assets = []
+        for i in range(1, 5):
+            path = f"components/estrella ({i}).png"
+            stars_assets.append(pygame.image.load(path).convert_alpha())
+        
+        # Pesos: prioridad a estrella (2) y (3) -> indice 1 y 2
+        # estrella(1): 10%, estrella(2): 35%, estrella(3): 45%, estrella(4): 10%
+        star_pool = [0]*10 + [1]*35 + [2]*45 + [3]*10
+        
+        for _ in range(31):  # Reducido un 10% (35 -> 31) para menor saturación
+            idx   = rng.choice(star_pool)
+            scale = rng.uniform(0.4, 0.9) # Estrellas el doble de grandes o más
+            raw_s = stars_assets[idx]
+            sw    = int(raw_s.get_width() * scale)
+            sh    = int(raw_s.get_height() * scale)
+            star_inst = pygame.transform.scale(raw_s, (sw, sh))
+            sx = rng.randint(0, width - sw)
+            sy = rng.randint(0, ground_y - 120)
+            surf.blit(star_inst, (sx, sy))
+            
+        # Puntos de "Polvo Estelar" (procedimental sutil para textura)
+        for _ in range(72): # Reducido un 10% (80 -> 72)
+            sx = rng.randint(0, width); sy = rng.randint(0, ground_y - 100)
+            pygame.draw.circle(surf, (255, 255, 255, 150), (sx, sy), rng.randint(1, 2))
+            
+    except Exception as e:
+        print(f"[Cielo] Error cargando estrellas: {e}")
 
-    # ── Nubes pastel con alpha ───────────────────────────────────────────────
-    cloud_defs = [(90, 65), (270, 48), (450, 85), (635, 55), (755, 75)]
-    for cx, cy in cloud_defs:
-        for ox, oy, rw, rh in [(-32, 6, 42, 24), (0, 0, 54, 30), (32, 9, 38, 22)]:
-            cloud_s = pygame.Surface((rw*2, rh*2), pygame.SRCALPHA)
-            pygame.draw.ellipse(cloud_s, C_CLOUD, cloud_s.get_rect())
-            surf.blit(cloud_s, (cx + ox, cy + oy))
-
-    # ── Hongos decorativos ───────────────────────────────────────────────────
-    for mx, my in [(675, ground_y - 34), (715, ground_y - 24)]:
-        pygame.draw.rect(surf, (200, 180, 220), (mx - 6, my, 12, 22))
-        pygame.draw.ellipse(surf, (255, 80, 140), (mx - 17, my - 20, 34, 24))
-        pygame.draw.circle(surf, (255, 255, 255), (mx - 6, my - 13), 3)
-        pygame.draw.circle(surf, (255, 255, 255), (mx + 5, my - 8), 2)
-
-    # ── Plataformas flotantes ciberpunk-cian ─────────────────────────────────
-    for plat_rect in platforms:
-        _draw_platform(surf, plat_rect)
-
-    # ── Suelo: rosa chicle con ladrillos ─────────────────────────────────────
-    ground_rect = pygame.Rect(0, ground_y, width, height - ground_y)
-    pygame.draw.rect(surf, C_GROUND_MID, ground_rect)
-    # Franja superior rosa brillante
-    pygame.draw.rect(surf, C_GROUND_TOP, (0, ground_y, width, 10))
-    # Línea de brillo blanca ultra-fina
-    pygame.draw.line(surf, (255, 200, 230), (0, ground_y), (width, ground_y), 1)
-    # Ladrillos desfasados
-    bw, bh = 64, 20
-    for row in range(3):
-        off = (bw // 2) if row % 2 else 0
-        for col in range(-1, width // bw + 2):
-            bx = col * bw + off
-            by = ground_y + 12 + row * bh
-            pygame.draw.rect(surf, (220, 90, 150),  (bx+2, by+2, bw-4, bh-4))
-            pygame.draw.rect(surf, (240, 130, 180), (bx+2, by+2, bw-4, 3))   # borde claro
-            pygame.draw.rect(surf, (160, 50, 110),  (bx+2, by+2, bw-4, bh-4), 1)  # borde oscuro
+    # ── Nubes Artísticas HD (componentes nube 1-3) ───────────────────────────
+    try:
+        clouds_assets = [
+            pygame.image.load(f"components/nube{i}.png").convert_alpha() 
+            for i in range(1, 4)
+        ]
+        # Posiciones dispersas (Reducido a 6 nubes para menos saturación)
+        cloud_configs = [
+            (50, 30, 0, 0.55), (320, 100, 1, 0.6), (620, 40, 2, 0.65), 
+            (900, 110, 0, 0.5), (1120, 30, 1, 0.55), 
+            (800, 190, 0, 0.4) # Eliminada una nube central baja
+        ]
+        for cx, cy, c_idx, c_scale in cloud_configs:
+            raw_c = clouds_assets[c_idx]
+            cw    = int(raw_c.get_width() * c_scale)
+            ch    = int(raw_c.get_height() * c_scale)
+            cloud_inst = pygame.transform.scale(raw_c, (cw, ch))
+            surf.blit(cloud_inst, (cx, cy))
+            
+    except Exception as e:
+        print(f"[Cielo] Error cargando nubes: {e}")
 
     return surf
 
+def build_trees_layer(width, height, ground_y):
+    """
+    Capa de Parallax Media: Dibuja los árboles una sola vez en un Surface con transparencia.
+    El ancho debe ser el de una pantalla (WIDTH), ya que lo repetiremos en el loop principal
+    con un multiplicador de scroll parallax (ej: 0.7x).
+    """
+    surf = pygame.Surface((width, height), pygame.SRCALPHA)
+    try:
+        t1 = pygame.image.load("components/arboles1.png").convert_alpha()
+        t2 = pygame.image.load("components/arboles2.png").convert_alpha()
+        import random
+        rng = random.Random(99) # semilla distinta al cielo
+        
+        # Generar un bioma estático de árboles que cubra 1 pantalla.
+        for tx in range(30, width, 80):
+            if rng.random() > 0.3: # 70% chance de arbol
+                is_giant = (rng.random() > 0.85) # 15% chance gigante
+                scale = rng.uniform(1.8, 2.1) if is_giant else rng.uniform(0.65, 1.4)
+                t_type = 1 if rng.random() > 0.5 else 2
+                raw = t1 if t_type == 1 else t2
+                tw = int(120 * scale)
+                th = int(160 * scale)
+                tree_inst = pygame.transform.scale(raw, (tw, th))
+                surf.blit(tree_inst, (tx + rng.randint(-20, 20), ground_y - th + 10))
+    except Exception as e:
+        print(f"[Cielo] Error cargando capa de árboles: {e}")
+        
+    return surf
+
+
 
 # ==========================================
-# 4. CLASE PLAYER — HD-2D con bob procedural
+# 4. ENTIDADES SECUNDARIAS (Enemigos y Proyectiles)
+# ==========================================
+class Projectile(pygame.sprite.Sprite):
+    def __init__(self, x, y, facing_right):
+        super().__init__()
+        self.image = pygame.Surface((24, 24), pygame.SRCALPHA)
+        # Fallback gráfico: Estrella / Bola de energía amarilla
+        pygame.draw.circle(self.image, (255, 255, 0), (12, 12), 12)
+        pygame.draw.circle(self.image, (255, 200, 0), (12, 12), 8)
+        self.rect = self.image.get_rect()
+        self.rect.center = (x, y)
+        self.velocity_x = 18 if facing_right else -18
+
+    def update(self):
+        self.rect.x += self.velocity_x
+
+class Enemy(pygame.sprite.Sprite):
+    def __init__(self, x, y):
+        super().__init__()
+        self.image = pygame.Surface((40, 40))
+        self.image.fill((255, 50, 50)) # Cubo rojo (Fallback)
+        # Ojos amenazantes
+        pygame.draw.rect(self.image, (0, 0, 0), (8, 8, 8, 8))
+        pygame.draw.rect(self.image, (0, 0, 0), (24, 8, 8, 8))
+        self.rect = self.image.get_rect()
+        self.rect.centerx = x
+        self.rect.bottom = y
+        self.velocity_x = -3 # IA: Inicia patrullando hacia la izq
+        self.velocity_y = 0
+        self.gravity = 0.65
+        
+    def update(self, visible_platforms):
+        # Movimiento horizontal Ping-Pong
+        self.rect.x += self.velocity_x
+        
+        # Gravedad Simple
+        self.velocity_y += self.gravity
+        self.rect.y += int(self.velocity_y)
+        
+        on_ground = False
+        current_platform = None
+        
+        if self.velocity_y >= 0:
+            for plat in visible_platforms:
+                if (self.rect.bottom >= plat.top and 
+                    self.rect.bottom <= plat.top + 18 and 
+                    self.rect.right > plat.left and 
+                    self.rect.left < plat.right):
+                    self.rect.bottom = plat.top
+                    self.velocity_y = 0.0
+                    on_ground = True
+                    current_platform = plat
+                    break
+                    
+        # Detección de caída (Edge Detection)
+        if on_ground and current_platform:
+            if self.rect.right > current_platform.right or self.rect.left < current_platform.left:
+                self.velocity_x *= -1 # Invertir dirección de patrulla
+                self.rect.x += self.velocity_x * 2 # Pequeño empujón seguro
+
+
+# ==========================================
+# 5. CLASE PLAYER — HD-2D con bob procedural
 # ==========================================
 class Player(pygame.sprite.Sprite):
     def __init__(self, ground_y, platforms):
@@ -194,9 +266,10 @@ class Player(pygame.sprite.Sprite):
 
         # ── Carga del sprite (con fallback a cápsula azul) ──────────────────
         try:
-            raw = pygame.image.load("echo_idle.png").convert_alpha()
-            self.image_base = pygame.transform.scale(raw, (56, 56))
-            print("[Player] Sprite echo_idle.png cargado correctamente.")
+            raw = pygame.image.load("components/echo_idle.png").convert_alpha()
+            # 130x140: Ahora con ancho extra para que se vea robusto y 'gordito'
+            self.image_base = pygame.transform.scale(raw, (130, 140))
+            print("[Player] Sprite components/echo_idle.png cargado y ajustado (130x140).")
         except Exception as e:
             print(f"[Player] Fallback: {e}")
             self.image_base = pygame.Surface((40, 52), pygame.SRCALPHA)
@@ -216,16 +289,22 @@ class Player(pygame.sprite.Sprite):
         # ── Físicas ──────────────────────────────────────────────────────────
         self.velocity_y  = 0.0
         self.velocity_x  = 0
+        self.target_velocity_x = 0  # Velocidad deseada (para recuperar el ritmo tras knockback)
         self.speed       = 4
         self.gravity     = 0.65
-        self.jump_power  = -14
+        self.jump_power  = -21 # Incrementado un 50% para salto más alto
         self.is_jumping  = False
-        self.ground_y    = ground_y
-        self.platforms   = platforms
+        # Bajamos al personaje 15px extra para que se hunda más en el diseño visual del suelo
+        self.ground_y    = ground_y + 15
 
         # ── Jump Buffer + Coyote Time ────────────────────────────────────────
         self.jump_buffer   = 0
         self.coyote_frames = 0
+
+        # ── Inventario y Daño ────────────────────────────────────────────────
+        self.invulnerable_timer = 0
+        self.facing_right = True
+        self.projectiles = []
 
         # ── Ataque ────────────────────────────────────────────────────────────
         self.attack_timer  = 0
@@ -235,17 +314,41 @@ class Player(pygame.sprite.Sprite):
         self.bounce_tick   = 0
         self._bob_offset   = 0     # Offset Y visual calculado en update()
 
-    def update(self):
-        # 1. Movimiento horizontal + wrap
+    def take_damage(self):
+        if self.invulnerable_timer == 0:
+            self.invulnerable_timer = 60 # 1 segundo de i-frames
+            self.velocity_x = -12 if self.facing_right else 12
+            self.velocity_y = -6 # Pequeño salto por el daño
+            return True
+        return False
+
+    def update(self, visible_platforms):
+        # 1. Movimiento horizontal y Fricción/Decaimiento de Knockback
+        if self.velocity_x > self.target_velocity_x:
+            self.velocity_x -= 0.5
+            if self.velocity_x < self.target_velocity_x:
+                self.velocity_x = self.target_velocity_x
+        elif self.velocity_x < self.target_velocity_x:
+            self.velocity_x += 0.5
+            if self.velocity_x > self.target_velocity_x:
+                self.velocity_x = self.target_velocity_x
+
         self.rect.x += self.velocity_x
-        if self.rect.right < 0:   self.rect.left  = WIDTH
-        if self.rect.left  > WIDTH: self.rect.right = 0
+        
+        # Clamp de mundo (No más Wrap)
+        if self.rect.left < 0:
+            self.rect.left = 0
+            if self.velocity_x < 0:
+                self.velocity_x = 0
+
+        # Bloque temporal de límite derecho opcional
+        # if self.rect.right > 31200: self.rect.right = 31200
 
         # 2. Gravedad
         self.velocity_y += self.gravity
         self.rect.y     += int(self.velocity_y)
 
-        # 3. Colisión con suelo
+        # 3. Colisión con suelo general (Fallback)
         on_ground = False
         if self.rect.bottom >= self.ground_y:
             self.rect.bottom = self.ground_y
@@ -253,9 +356,9 @@ class Player(pygame.sprite.Sprite):
             self.is_jumping  = False
             on_ground        = True
 
-        # 4. Colisión con plataformas flotantes (solo desde arriba)
+        # 4. Colisión con plataformas flotantes sólidas y de suelo (Culling optimizado)
         if self.velocity_y >= 0:
-            for plat in self.platforms:
+            for plat in visible_platforms:
                 if (self.rect.bottom >= plat.top
                         and self.rect.bottom <= plat.top + 18
                         and self.rect.right  > plat.left + 4
@@ -289,18 +392,31 @@ class Player(pygame.sprite.Sprite):
                 self.bounce_tick = 0
             self._bob_offset = 0
 
+        # Update variables de acción y disparo
+        if self.velocity_x > 0: self.facing_right = True
+        elif self.velocity_x < 0: self.facing_right = False
+        
+        if self.invulnerable_timer > 0:
+            self.invulnerable_timer -= 1
+            
+        for p in self.projectiles[:]:
+            p.update()
+
         # 8. Imagen: ataque > flip según dirección
         if self.attack_timer > 0:
             self.attack_timer -= 1
             tinted = self.image_base.copy()
             tinted.fill((255, 50, 50, 0), special_flags=pygame.BLEND_RGB_ADD)
-            self.image = tinted
+            self.image = tinted if self.facing_right else pygame.transform.flip(tinted, True, False)
         else:
-            self.image        = self.image_flip if self.velocity_x < 0 else self.image_base
+            self.image        = self.image_base if self.facing_right else self.image_flip
             self.is_attacking = False
 
     def draw_with_bob(self, surface):
-        """Blitea el sprite aplicando el offset de bob vertical."""
+        """Blitea el sprite aplicando el offset de bob vertical y el parpadeo de invulnerabilidad."""
+        if self.invulnerable_timer > 0 and (self.invulnerable_timer // 4) % 2 == 0:
+            return # Parpadeo: no dibujar este frame
+            
         draw_pos = (self.rect.x, self.rect.y + self._bob_offset)
         surface.blit(self.image, draw_pos)
 
@@ -313,11 +429,21 @@ class Player(pygame.sprite.Sprite):
         else:
             self.jump_buffer = 30
 
-    def run(self):    self.velocity_x = self.speed
-    def stop(self):   self.velocity_x = 0
+    def run(self):
+        self.target_velocity_x = self.speed
+        if abs(self.velocity_x) <= self.speed:
+            self.velocity_x = self.speed
+
+    def stop(self):
+        self.target_velocity_x = 0
+        if abs(self.velocity_x) <= self.speed:
+            self.velocity_x = 0
+
     def attack(self):
         self.attack_timer = 20
         self.is_attacking = True
+        proj_x = self.rect.right if self.facing_right else self.rect.left
+        self.projectiles.append(Projectile(proj_x, self.rect.centery - 10, self.facing_right))
 
 
 # ==========================================
@@ -414,19 +540,81 @@ def main():
         font_sm = pygame.font.Font(None, 16)
         font_md = pygame.font.Font(None, 22)
 
-    # ── Plataformas (Rects de física + visual) ────────────────────────────────
-    platforms = [
-        pygame.Rect(155, GROUND_Y - 130, 145, 20),
-        pygame.Rect(395, GROUND_Y - 190, 165, 20),
-        pygame.Rect(595, GROUND_Y - 118, 145, 20),
-    ]
+    # ── GENERACIÓN PROCEDIMENTAL DEL NIVEL (31,200 px) ────────────────────────
+    import random
+    rng = random.Random(101)
+    
+    # 1. Plataformas (Lista masiva pre-ordenada por X)
+    platforms = []
+    pos_x = 240
+    while pos_x < 31200:
+        pw = rng.randint(200, 600)
+        py = GROUND_Y - rng.randint(150, 400)
+        platforms.append(pygame.Rect(pos_x, py, pw, 48))
+        pos_x += pw + rng.randint(150, 400) # gap aleatorio hasta la siguiente
+        
+    platforms_x = [p.x for p in platforms] # Lista K-V para bisect rápido
 
-    # ── PRE-RENDER ÚNICO (Surface Caching) ────────────────────────────────────
-    bg_surface = build_background(WIDTH, HEIGHT, GROUND_Y, platforms)
+    # 2. Texturas Cacheadas (Suelo y Balcones)
+    try:
+        raw_piso = pygame.image.load("components/piso.png").convert_alpha()
+        pw_piso, ph_piso = raw_piso.get_size()
+        target_h = HEIGHT - (GROUND_Y - 40) + 10
+        piso_stretched = pygame.transform.scale(raw_piso, (pw_piso, target_h))
+    except:
+        pw_piso, piso_stretched = 356, None
+
+    try:
+        raw_balcon = pygame.image.load("components/balcon.png").convert_alpha()
+        bh_target = 76
+        aspect_balcon = raw_balcon.get_width() / raw_balcon.get_height()
+        bw_balcon = int(bh_target * aspect_balcon)
+        balcon_scaled = pygame.transform.scale(raw_balcon, (bw_balcon, bh_target))
+    except:
+        bw_balcon, balcon_scaled = 100, None
+
+    # 3. Chunks de Suelo Lineal
+    ground_chunks = []
+    gx = -60
+    while gx < 31500:
+        y_jitter = rng.randint(-8, 4)
+        ground_chunks.append(pygame.Rect(gx, GROUND_Y - 40 + y_jitter, pw_piso, target_h))
+        gx += (pw_piso - 10)
+    ground_xs = [g.x for g in ground_chunks]
+
+    # 4. Peligros, Enemigos y Meta (Fase 2)
+    LEVEL_END_X = 31000
+    victory = False
+
+    hazards = []
+    hx = 1200
+    while hx < LEVEL_END_X - 1000:
+        hw = rng.randint(60, 160)
+        hazards.append(pygame.Rect(hx, GROUND_Y - 20, hw, 30))
+        hx += rng.randint(800, 2500)
+    hazards_x = [h.x for h in hazards]
+
+    enemies = []
+    ex = 1000
+    while ex < LEVEL_END_X - 1000:
+        enemies.append(Enemy(ex, GROUND_Y))
+        ex += rng.randint(600, 1500)
+        # 50% de probabilidad de generar otro sobre una plataforma aleatoria
+        if rng.random() > 0.5:
+            plat = rng.choice(platforms)
+            if plat.x > 1000: # Evitar poner cerca del spawn
+                enemies.append(Enemy(plat.centerx, plat.top))
+
+    # ── PRE-RENDER CACHE (Parallax Layers) ────────────────────────────────────
+    bg_sky     = build_background(WIDTH, HEIGHT, GROUND_Y)
+    bg_trees   = build_trees_layer(WIDTH, HEIGHT, GROUND_Y)
     hud_bg     = build_hud_bg()
 
+    # Variables de Cámara
+    camera_x = 0
+
     # ── Sprites ───────────────────────────────────────────────────────────────
-    player = Player(GROUND_Y, platforms)
+    player = Player(GROUND_Y, platforms) # Se inicializa sin plataformas atadas al mundo, luego update() define visibles
 
     # ── Cola y proceso de voz ─────────────────────────────────────────────────
     cmd_queue     = multiprocessing.Queue(maxsize=1)
@@ -478,15 +666,140 @@ def main():
         if time.time() - last_cmd_time > DEBOUNCE_SECS:
             cmd_color = C_CMD_IDLE
 
-        # ── Lógica del jugador ────────────────────────────────────────────────
-        player.update()
+        # ── SISTEMA DE CÁMARA (SCROLLING LINEAL) ──────────────────────────────
+        camera_x = max(0, player.rect.x - (WIDTH // 2 - 100))
 
-        # ── RENDER ────────────────────────────────────────────────────────────
-        # O(1): un solo blit del Surface maestro pre-renderizado
-        screen.blit(bg_surface, (0, 0))
+        # ── FRUSTUM CULLING (Cálculo de Plataformas y Suelo Visibles) ─────────
+        # Buscar el punto de inicio en el array ordenado
+        idx_start_plat = bisect.bisect_left(platforms_x, camera_x - 1000)
+        idx_end_plat   = bisect.bisect_right(platforms_x, camera_x + WIDTH)
+        visible_platforms = platforms[max(0, idx_start_plat):idx_end_plat]
 
-        # Jugador con bob vertical procedural
+        idx_start_gnd = bisect.bisect_left(ground_xs, camera_x - pw_piso)
+        idx_end_gnd   = bisect.bisect_right(ground_xs, camera_x + WIDTH)
+        visible_grounds = ground_chunks[max(0, idx_start_gnd):idx_end_gnd]
+
+        # Culling Hazards
+        idx_start_haz = bisect.bisect_left(hazards_x, camera_x - 500)
+        idx_end_haz   = bisect.bisect_right(hazards_x, camera_x + WIDTH)
+        visible_hazards = hazards[max(0, idx_start_haz):idx_end_haz]
+        
+        # ── INTERACCIONES Y LÓGICA (Solo si no hemos ganado) ──────────────────
+        if player.rect.centerx >= LEVEL_END_X and not victory:
+            victory = True
+            player.stop()
+
+        if not victory:
+            # Lógica de Enemigos y Proyectiles
+            for e in enemies[:]:
+                if camera_x - 200 < e.rect.x < camera_x + WIDTH + 200:
+                    e.update(visible_platforms)
+                    
+                    # Colisión Jugador vs Enemigo
+                    if e.rect.colliderect(player.rect):
+                        if player.take_damage():
+                            lives -= 1
+                    
+                    # Colisión Proyectil vs Enemigo
+                    for p in player.projectiles[:]:
+                        if p.rect.colliderect(e.rect):
+                            if p in player.projectiles: player.projectiles.remove(p)
+                            if e in enemies: enemies.remove(e)
+
+            # Colisión con Hazards estáticos
+            for haz in visible_hazards:
+                if player.rect.colliderect(haz):
+                    if player.take_damage():
+                        lives -= 1
+
+            # Mantenimiento de Proyectiles (Choques con terreno o fuera de cámara)
+            for p in player.projectiles[:]:
+                hit_plat = any(p.rect.colliderect(plat) for plat in visible_platforms)
+                out_of_bounds = p.rect.x < camera_x - 300 or p.rect.x > camera_x + WIDTH + 300
+                if hit_plat or out_of_bounds:
+                    if p in player.projectiles: player.projectiles.remove(p)
+                    
+            # Update físico principal del jugador
+            player.update(visible_platforms)
+            if lives <= 0:
+                pass # Aquí iría lógica de GameOver. Por ahora se quedará vivo a 0.
+
+        # ── RENDER (PARALLAX + CULLING) ───────────────────────────────────────
+        screen.fill(C_HUD_BG) # 1. Limpieza Absoluta de Pantalla
+        
+        # 2. Fondo de Cielo Infinito (0.1x Parallax continuo modular)
+        bg_x = -(camera_x * 0.1) % WIDTH
+        screen.blit(bg_sky, (bg_x, 0))
+        screen.blit(bg_sky, (bg_x - WIDTH, 0))
+
+        # 3. Bosque Infinito (Capa Media 0.7x Parallax continuo modular)
+        trees_x = -(camera_x * 0.7) % WIDTH
+        screen.blit(bg_trees, (trees_x, 0))
+        screen.blit(bg_trees, (trees_x - WIDTH, 0))
+
+        # 3. Suelo Visible (Espacio Físico Local)
+        # Capa rosa trasera subyacente para huecos de rebote o parpadeo visual
+        pygame.draw.rect(screen, (200, 80, 140), (0, GROUND_Y + 20, WIDTH, HEIGHT - GROUND_Y))
+        
+        for g_chunk in visible_grounds:
+            if piso_stretched:
+                screen.blit(piso_stretched, (g_chunk.x - camera_x, g_chunk.y))
+
+        # 4. Plataformas Flotantes Visibles (Balcones Teselados)
+        for plat in visible_platforms:
+            if balcon_scaled:
+                # Tiling del balcon visualmente para abarcar toda la plataforma
+                tx = plat.x
+                while tx < plat.right:
+                    screen.blit(balcon_scaled, (tx - camera_x, plat.y - 12))
+                    tx += (bw_balcon - 2)
+            else:
+                pygame.draw.rect(screen, C_PLATFORM, 
+                                 (plat.x - camera_x, plat.y, plat.width, plat.height), 
+                                 border_radius=4)
+                                 
+        # 5. Peligros / Hazards
+        for haz in visible_hazards:
+            # Dibujo de fluido tóxico simplificado
+            pygame.draw.rect(screen, (50, 255, 50), (haz.x - camera_x, haz.y, haz.width, haz.height), border_radius=3)
+            
+        # 6. Enemigos
+        for e in enemies:
+            if camera_x - 200 < e.rect.x < camera_x + WIDTH + 200:
+                screen.blit(e.image, (e.rect.x - camera_x, e.rect.y))
+                
+        # 7. Proyectiles
+        for p in player.projectiles:
+            screen.blit(p.image, (p.rect.x - camera_x, p.rect.y))
+            
+        # 8. Meta
+        pygame.draw.rect(screen, (255, 215, 0), (LEVEL_END_X - camera_x, GROUND_Y - 300, 40, 300))
+
+        # 5. Jugador (Relativo a cámara)
+        # Modificamos el dibujo del offset vertical temporalmente interceptando su variable original de render:
+        screen_x = player.rect.x - camera_x
+        # player.draw_with_bob normally blits directly, we'll implement the custom manual blit relative to offset:
+        # Puesto que draw_with_bob hace "surf.blit(self.image, (self.rect.x, self.rect.y + self._bob_offset))"
+        # Tenemos que anular temporalmente rect.x para el render, sin afectar física:
+        old_x = player.rect.x
+        player.rect.x = screen_x
         player.draw_with_bob(screen)
+        player.rect.x = old_x
+
+        # Capa UI: Cartel Victoria
+        if victory:
+            # Box central
+            vw, vh = 500, 100
+            vx, vy = WIDTH // 2 - vw // 2, HEIGHT // 3
+            pygame.draw.rect(screen, (30, 25, 40, 200), (vx, vy, vw, vh), border_radius=15)
+            pygame.draw.rect(screen, (255, 215, 0), (vx, vy, vw, vh), 3, border_radius=15)
+            # Text
+            try:
+                f_vic = pygame.font.SysFont("Consolas", 40, bold=True)
+            except:
+                f_vic = pygame.font.Font(None, 50)
+            lbl_vic = f_vic.render("NIVEL COMPLETADO", True, (255, 215, 0))
+            screen.blit(lbl_vic, (WIDTH // 2 - lbl_vic.get_width() // 2, vy + vh // 2 - lbl_vic.get_height() // 2))
 
         # HUD dinámico (solo texto + barra cambian cada frame)
         draw_hud(screen, hud_bg, font_sm, font_md,
