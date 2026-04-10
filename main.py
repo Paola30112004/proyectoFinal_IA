@@ -18,182 +18,228 @@ def load_settings(path="settings.json"):
         print(f"Error cargando settings: {e}")
         sys.exit(1)
 
-settings = load_settings()
-audio_cfg = settings.get("audio_settings", {})
-ai_cfg    = settings.get("ai_model", {})
-
-MIC_INDEX   = audio_cfg.get("microphone_index", 1)
-SAMPLE_RATE = audio_cfg.get("sample_rate", 16000)
-CHUNK_SIZE  = audio_cfg.get("chunk_size", 1024)
-CHANNELS    = audio_cfg.get("channels", 1)
-W_MODEL     = ai_cfg.get("whisper_model", "tiny")
-COMMANDS    = settings.get("commands", {})
+settings   = load_settings()
+audio_cfg  = settings.get("audio_settings", {})
+ai_cfg     = settings.get("ai_model", {})
+W_MODEL    = ai_cfg.get("whisper_model", "tiny")
+COMMANDS   = settings.get("commands", {})
 
 # ==========================================
-# 2. CONSTANTES VISUALES
+# 2. CONSTANTES VISUALES — "STAR CANDY ADVENTURES"
 # ==========================================
 WIDTH, HEIGHT  = 800, 450
 FPS            = 60
-GROUND_Y       = HEIGHT - 65   # Y de la superficie del suelo (top del rect)
+GROUND_Y       = HEIGHT - 65
 DEBOUNCE_SECS  = 1.5
 
-# Paleta "Star Candy"
-C_SKY_TOP    = (60,  20, 100)
-C_SKY_MID    = (130, 60, 180)
-C_SKY_BOT    = (210, 110, 200)
-C_PLATFORM   = (210, 140, 200)
-C_PLAT_EDGE  = (160,  90, 220)
-C_PLAT_BRICK = (180, 100, 160)
-C_GROUND_TOP = (200, 130, 190)
-C_GROUND_MID = (160, 100, 170)
-C_STAR       = (255, 255, 210)
-C_CLOUD      = (240, 215, 255)
-C_DIAMOND    = (100, 230, 255)
-C_COIN       = (255, 215,  60)
-C_HUD_BG     = (20,  10,  40, 180)   # RGBA semi-transparente
-C_HUD_TEXT   = (255, 255, 255)
-C_CMD_ACTIVE = (100, 255, 140)
-C_CMD_IDLE   = (180, 150, 220)
-BLUE         = (80, 170, 255)
+# Paleta Espacial-Dulce (tonos pastel cósmicos)
+C_SKY_TOP    = ( 18,   8,  55)   # Azul noche profundo
+C_SKY_MID    = ( 65,  20, 120)   # Púrpura galáctica
+C_SKY_BOT    = (150,  60, 190)   # Magenta crepuscular
+C_NEBULA_A   = (255, 100, 160, 30)  # Rosa nebulosa (con alpha)
+C_NEBULA_B   = ( 80, 160, 255, 20)  # Azul nebulosa (con alpha)
+C_PLATFORM   = ( 60, 210, 230)   # Cian neón
+C_PLAT_LIGHT = (160, 255, 255)   # Cian claro para borde superior
+C_PLAT_DARK  = ( 20, 130, 160)   # Cian oscuro para sombra
+C_PLAT_BRICK = ( 40, 180, 210)   # Ladrillo cian medio
+C_GROUND_TOP = (255, 120, 180)   # Rosa chicle — superficie suelo
+C_GROUND_MID = (200,  70, 140)   # Rosa oscuro — cuerpo suelo
+C_STAR       = (255, 255, 210)   # Estrella blanca-cálida
+C_STAR_BLUE  = (160, 220, 255)   # Estrella fría
+C_CLOUD      = (255, 210, 240, 160)  # Nube pastel rosada
+C_DIAMOND    = (100, 240, 255)   # Cian brillante
+C_HUD_BG     = ( 10,   5,  35, 200)  # Negro cósmico semi-transparente
+C_HUD_BORDER = (140,  80, 255)   # Borde púrpura neón
+C_HUD_LABEL  = (200, 160, 255)   # Texto label tenue
+C_CMD_ACTIVE = ( 80, 255, 160)   # Verde neón: comando activo
+C_CMD_IDLE   = (120, 100, 180)   # Púrpura tenue: esperando
+C_LIFE_ON    = (255, 100, 120)   # Vida activa (rosa)
+C_LIFE_OFF   = ( 80,  40,  80)   # Vida perdida (oscuro)
+C_FALLBACK   = ( 80, 170, 255)   # Color fallback del sprite
+
+# Sets de comandos (sincronizados con voice_engine.py confusion_matrix)
+STOP_SET   = {"stop","para","pare","paro","parar","frena","frenar",
+              "alto","detente","quieto","espera","basta","suficiente",
+              "halt","bada","badaa","bad","bara"}
+ATTACK_SET = {"attack","ataca","ataque","atacar","ataco",
+              "golpea","golpe","golpear","pega","pegar",
+              "dispara","disparar","adaca"}
+RUN_SET    = {"run","corre","corra","correr","corres","corriendo",
+              "avanza","avanzar","mueve","moverse","anda","andar","vete"}
+JUMP_SET   = {"jump","salta","salte","saltar","salto","saltas",
+              "brinca","brincar","sube","subir","arriba",
+              "sawta","salda","sadda","sanda"}
 
 
 # ==========================================
-# 3. PRE-RENDERIZADO DEL ESCENARIO ESTÁTICO
+# 3. SURFACE CACHING — Escenario Estático
 # ==========================================
+def _lerp_color(c1, c2, t):
+    return (
+        int(c1[0] + (c2[0] - c1[0]) * t),
+        int(c1[1] + (c2[1] - c1[1]) * t),
+        int(c1[2] + (c2[2] - c1[2]) * t),
+    )
+
+def _draw_platform(surf, rect):
+    """Dibuja plataforma estilo ciberpunk-cian sobre un Surface."""
+    # Cuerpo principal
+    pygame.draw.rect(surf, C_PLATFORM, rect, border_radius=4)
+    # Borde superior iluminado (luz cenital)
+    pygame.draw.rect(surf, C_PLAT_LIGHT,
+                     (rect.x, rect.y, rect.width, 5), border_radius=4)
+    # Sombra inferior
+    pygame.draw.rect(surf, C_PLAT_DARK,
+                     (rect.x, rect.bottom - 4, rect.width, 4), border_radius=2)
+    # Separadores de ladrillo verticales
+    brick_w = 38
+    for bx in range(rect.x + brick_w, rect.right, brick_w):
+        pygame.draw.line(surf, C_PLAT_DARK,
+                         (bx, rect.y + 5), (bx, rect.bottom - 4), 1)
+    # Destello especular pequeño (fake 3D)
+    pygame.draw.ellipse(surf, (240, 255, 255),
+                        (rect.x + 8, rect.y + 1, 28, 3))
+
+
 def build_background(width, height, ground_y, platforms):
     """
-    Genera el Surface maestro del escenario una sola vez.
-    Incluye: gradiente de cielo, estrellas, nubes, plataformas y suelo con bordes.
+    Renderiza UNA SOLA VEZ el escenario completo.
+    En el loop principal solo se hace screen.blit(bg_surface, (0,0)).
     """
     surf = pygame.Surface((width, height))
 
-    # --- Gradiente de cielo (3 bandas interpoladas) ---
+    # ── Gradiente de cielo en 3 tramos ──────────────────────────────────────
     band_h = height // 3
     for y in range(height):
         if y < band_h:
-            t = y / band_h
-            r = int(C_SKY_TOP[0] + (C_SKY_MID[0] - C_SKY_TOP[0]) * t)
-            g = int(C_SKY_TOP[1] + (C_SKY_MID[1] - C_SKY_TOP[1]) * t)
-            b = int(C_SKY_TOP[2] + (C_SKY_MID[2] - C_SKY_TOP[2]) * t)
+            c = _lerp_color(C_SKY_TOP, C_SKY_MID, y / band_h)
         elif y < band_h * 2:
-            t = (y - band_h) / band_h
-            r = int(C_SKY_MID[0] + (C_SKY_BOT[0] - C_SKY_MID[0]) * t)
-            g = int(C_SKY_MID[1] + (C_SKY_BOT[1] - C_SKY_MID[1]) * t)
-            b = int(C_SKY_MID[2] + (C_SKY_BOT[2] - C_SKY_MID[2]) * t)
+            c = _lerp_color(C_SKY_MID, C_SKY_BOT, (y - band_h) / band_h)
         else:
-            r, g, b = C_SKY_BOT
-        pygame.draw.line(surf, (r, g, b), (0, y), (width, y))
+            c = C_SKY_BOT
+        pygame.draw.line(surf, c, (0, y), (width, y))
 
-    # --- Estrellas estáticas ---
+    # ── Nebulosas difusas (Surfaces con alpha bliteadas) ─────────────────────
+    neb = pygame.Surface((260, 120), pygame.SRCALPHA)
+    pygame.draw.ellipse(neb, C_NEBULA_A, neb.get_rect())
+    surf.blit(neb, (80, 30))
+    neb2 = pygame.Surface((200, 90), pygame.SRCALPHA)
+    pygame.draw.ellipse(neb2, C_NEBULA_B, neb2.get_rect())
+    surf.blit(neb2, (480, 60))
+
+    # ── Estrellas de dos tonos, tamaños variados ─────────────────────────────
     import random
-    rng = random.Random(42)   # Seed fija para reproducibilidad
-    for _ in range(80):
-        sx = rng.randint(0, width)
-        sy = rng.randint(0, ground_y - 80)
-        sr = rng.randint(1, 3)
-        pygame.draw.circle(surf, C_STAR, (sx, sy), sr)
+    rng = random.Random(42)
+    for _ in range(110):
+        sx  = rng.randint(0, width)
+        sy  = rng.randint(0, ground_y - 80)
+        sr  = rng.randint(1, 3)
+        col = C_STAR if rng.random() > 0.35 else C_STAR_BLUE
+        pygame.draw.circle(surf, col, (sx, sy), sr)
+    # Estrellas grandes con cruz de destello
+    for _ in range(8):
+        sx = rng.randint(20, width - 20)
+        sy = rng.randint(10, ground_y - 80)
+        br = rng.randint(2, 4)
+        pygame.draw.circle(surf, C_STAR, (sx, sy), br)
+        pygame.draw.line(surf, C_STAR, (sx - br*2, sy), (sx + br*2, sy), 1)
+        pygame.draw.line(surf, C_STAR, (sx, sy - br*2), (sx, sy + br*2), 1)
 
-    # --- Nubes (elipses superpuestas) ---
-    cloud_defs = [
-        (100, 70), (280, 50), (460, 90), (640, 60), (760, 80)
-    ]
+    # ── Nubes pastel con alpha ───────────────────────────────────────────────
+    cloud_defs = [(90, 65), (270, 48), (450, 85), (635, 55), (755, 75)]
     for cx, cy in cloud_defs:
-        for ox, oy, rw, rh in [
-            (-30, 5, 40, 22), (0, 0, 50, 28), (30, 8, 35, 20)
-        ]:
-            pygame.draw.ellipse(surf, C_CLOUD, (cx + ox, cy + oy, rw * 2, rh * 2))
+        for ox, oy, rw, rh in [(-32, 6, 42, 24), (0, 0, 54, 30), (32, 9, 38, 22)]:
+            cloud_s = pygame.Surface((rw*2, rh*2), pygame.SRCALPHA)
+            pygame.draw.ellipse(cloud_s, C_CLOUD, cloud_s.get_rect())
+            surf.blit(cloud_s, (cx + ox, cy + oy))
 
-    # --- Decoración: hongos simples (roca + cabeza) ---
-    mushroom_positions = [(680, ground_y - 30), (720, ground_y - 22)]
-    for mx, my in mushroom_positions:
-        pygame.draw.rect(surf, (200, 180, 210), (mx - 6, my, 12, 20))
-        pygame.draw.ellipse(surf, (255, 80, 120), (mx - 16, my - 18, 32, 22))
-        pygame.draw.circle(surf, (255, 255, 255), (mx - 6, my - 12), 3)
-        pygame.draw.circle(surf, (255, 255, 255), (mx + 4, my - 8), 2)
+    # ── Hongos decorativos ───────────────────────────────────────────────────
+    for mx, my in [(675, ground_y - 34), (715, ground_y - 24)]:
+        pygame.draw.rect(surf, (200, 180, 220), (mx - 6, my, 12, 22))
+        pygame.draw.ellipse(surf, (255, 80, 140), (mx - 17, my - 20, 34, 24))
+        pygame.draw.circle(surf, (255, 255, 255), (mx - 6, my - 13), 3)
+        pygame.draw.circle(surf, (255, 255, 255), (mx + 5, my - 8), 2)
 
-    # --- Plataformas flotantes (pre-renderizadas) ---
+    # ── Plataformas flotantes ciberpunk-cian ─────────────────────────────────
     for plat_rect in platforms:
         _draw_platform(surf, plat_rect)
 
-    # --- Suelo (ladrillo pixel art) ---
+    # ── Suelo: rosa chicle con ladrillos ─────────────────────────────────────
     ground_rect = pygame.Rect(0, ground_y, width, height - ground_y)
-    pygame.draw.rect(surf, C_GROUND_TOP, ground_rect)
-    # Borde superior iluminado
-    pygame.draw.rect(surf, C_PLATFORM, (0, ground_y, width, 8))
-    # Patrón de ladrillos
-    brick_w, brick_h = 60, 18
+    pygame.draw.rect(surf, C_GROUND_MID, ground_rect)
+    # Franja superior rosa brillante
+    pygame.draw.rect(surf, C_GROUND_TOP, (0, ground_y, width, 10))
+    # Línea de brillo blanca ultra-fina
+    pygame.draw.line(surf, (255, 200, 230), (0, ground_y), (width, ground_y), 1)
+    # Ladrillos desfasados
+    bw, bh = 64, 20
     for row in range(3):
-        offset = (brick_w // 2) if row % 2 else 0
-        for col in range(-1, width // brick_w + 2):
-            bx = col * brick_w + offset
-            by = ground_y + 10 + row * brick_h
-            pygame.draw.rect(surf, C_PLAT_BRICK, (bx + 2, by + 2, brick_w - 4, brick_h - 4))
-            pygame.draw.rect(surf, C_PLAT_EDGE, (bx + 2, by + 2, brick_w - 4, brick_h - 4), 1)
+        off = (bw // 2) if row % 2 else 0
+        for col in range(-1, width // bw + 2):
+            bx = col * bw + off
+            by = ground_y + 12 + row * bh
+            pygame.draw.rect(surf, (220, 90, 150),  (bx+2, by+2, bw-4, bh-4))
+            pygame.draw.rect(surf, (240, 130, 180), (bx+2, by+2, bw-4, 3))   # borde claro
+            pygame.draw.rect(surf, (160, 50, 110),  (bx+2, by+2, bw-4, bh-4), 1)  # borde oscuro
 
     return surf
 
 
-def _draw_platform(surf, rect):
-    """Dibuja una plataforma flotante estilo ladrillo about sobre el surface dado."""
-    # Cuerpo principal
-    pygame.draw.rect(surf, C_PLATFORM, rect)
-    # Borde superior claro
-    pygame.draw.rect(surf, (230, 170, 230), (rect.x, rect.y, rect.width, 6))
-    # Borde inferior oscuro
-    pygame.draw.rect(surf, C_PLAT_EDGE, (rect.x, rect.bottom - 4, rect.width, 4))
-    # Mini ladrillos internos
-    brick_w = 36
-    for i in range(rect.x, rect.x + rect.width, brick_w):
-        pygame.draw.line(surf, C_PLAT_EDGE, (i, rect.y + 6), (i, rect.bottom - 4), 1)
-
-
 # ==========================================
-# 4. CLASE PLAYER
+# 4. CLASE PLAYER — HD-2D con bob procedural
 # ==========================================
 class Player(pygame.sprite.Sprite):
     def __init__(self, ground_y, platforms):
         super().__init__()
-        # Intentar cargar sprite de Echo con fallback a cuadrado azul
+
+        # ── Carga del sprite (con fallback a cápsula azul) ──────────────────
         try:
-            self.image_base = pygame.image.load("echo_idle.png").convert_alpha()
-            self.image_base = pygame.transform.scale(self.image_base, (52, 52))
+            raw = pygame.image.load("echo_idle.png").convert_alpha()
+            self.image_base = pygame.transform.scale(raw, (56, 56))
+            print("[Player] Sprite echo_idle.png cargado correctamente.")
         except Exception as e:
-            print(f"[Error] No se pudo cargar echo_idle.png: {e}")
-            self.image_base = pygame.Surface((40, 48), pygame.SRCALPHA)
-            self.image_base.fill(BLUE)
+            print(f"[Player] Fallback: {e}")
+            self.image_base = pygame.Surface((40, 52), pygame.SRCALPHA)
+            # Cápsula azul degradada como fallback premium
+            for row in range(52):
+                t   = row / 52
+                col = _lerp_color(C_FALLBACK, (30, 80, 160), t)
+                pygame.draw.line(self.image_base, col, (4, row), (36, row))
+            pygame.draw.rect(self.image_base, (140, 210, 255), (4, 0, 32, 52), 2, border_radius=8)
 
-        self.image       = self.image_base.copy()
-        self.image_flip  = pygame.transform.flip(self.image_base, True, False)
-        self.rect        = self.image.get_rect()
-        self.rect.x      = 80
-        self.rect.y      = ground_y - self.rect.height
+        self.image_flip = pygame.transform.flip(self.image_base, True, False)
+        self.image      = self.image_base.copy()
+        self.rect       = self.image.get_rect()
+        self.rect.x     = 80
+        self.rect.y     = ground_y - self.rect.height
 
-        # Físicas
-        self.velocity_y  = 0
+        # ── Físicas ──────────────────────────────────────────────────────────
+        self.velocity_y  = 0.0
         self.velocity_x  = 0
         self.speed       = 4
         self.gravity     = 0.65
         self.jump_power  = -14
         self.is_jumping  = False
-        self.ground_y    = ground_y        # Y máxima del suelo
-        self.platforms   = platforms       # Lista de pygame.Rect para colisión
+        self.ground_y    = ground_y
+        self.platforms   = platforms
 
-        # Jump Buffer / Coyote Time
-        self.jump_buffer    = 0
-        self.coyote_frames  = 0            # Frames desde que dejó una plataforma
+        # ── Jump Buffer + Coyote Time ────────────────────────────────────────
+        self.jump_buffer   = 0
+        self.coyote_frames = 0
 
-        # Ataque
-        self.attack_timer   = 0
-        self.is_attacking   = False
+        # ── Ataque ────────────────────────────────────────────────────────────
+        self.attack_timer  = 0
+        self.is_attacking  = False
 
-        # Animación de bounce
-        self.bounce_tick    = 0
+        # ── Bob de pasos ─────────────────────────────────────────────────────
+        self.bounce_tick   = 0
+        self._bob_offset   = 0     # Offset Y visual calculado en update()
 
     def update(self):
-        # 1. Movimiento Horizontal + Screen Wrap
+        # 1. Movimiento horizontal + wrap
         self.rect.x += self.velocity_x
-        if self.rect.right < 0:  self.rect.left  = WIDTH
-        if self.rect.left > WIDTH: self.rect.right = 0
+        if self.rect.right < 0:   self.rect.left  = WIDTH
+        if self.rect.left  > WIDTH: self.rect.right = 0
 
         # 2. Gravedad
         self.velocity_y += self.gravity
@@ -203,62 +249,62 @@ class Player(pygame.sprite.Sprite):
         on_ground = False
         if self.rect.bottom >= self.ground_y:
             self.rect.bottom = self.ground_y
-            self.velocity_y  = 0
+            self.velocity_y  = 0.0
             self.is_jumping  = False
             on_ground        = True
 
-        # 4. Colisión con plataformas flotantes (solo por arriba)
+        # 4. Colisión con plataformas flotantes (solo desde arriba)
         if self.velocity_y >= 0:
             for plat in self.platforms:
                 if (self.rect.bottom >= plat.top
-                        and self.rect.bottom <= plat.top + 16
+                        and self.rect.bottom <= plat.top + 18
                         and self.rect.right  > plat.left + 4
                         and self.rect.left   < plat.right - 4):
                     self.rect.bottom = plat.top
-                    self.velocity_y  = 0
+                    self.velocity_y  = 0.0
                     self.is_jumping  = False
                     on_ground        = True
                     break
 
-        # 5. Coyote Time (6 frames tras perder suelo)
+        # 5. Coyote Time
         if on_ground:
             self.coyote_frames = 6
         elif self.coyote_frames > 0:
             self.coyote_frames -= 1
 
-        # 6. Jump Buffer ejecutado al aterrizar
+        # 6. Jump Buffer al aterrizar
         if on_ground and self.jump_buffer > 0:
-            self.velocity_y   = self.jump_power
-            self.is_jumping   = True
-            self.jump_buffer  = 0
-
+            self.velocity_y  = self.jump_power
+            self.is_jumping  = True
+            self.jump_buffer = 0
         if self.jump_buffer > 0:
             self.jump_buffer -= 1
 
-        # 7. Animación: bounce horizontal y flip de sprite
-        if self.velocity_x != 0:
-            self.bounce_tick   += 1
-            bob                 = int(math.sin(self.bounce_tick * 0.25) * 2)
-            visual_rect         = self.image.get_rect(topleft=self.rect.topleft)
-            visual_rect.y      += bob
+        # 7. Bob procedural de pasos (solo en suelo y corriendo)
+        if self.velocity_x != 0 and on_ground:
+            self.bounce_tick += 1
+            self._bob_offset  = int(math.sin(self.bounce_tick * 0.30) * 2)
         else:
-            self.bounce_tick = 0
+            if self.velocity_x == 0:
+                self.bounce_tick = 0
+            self._bob_offset = 0
 
-        # 8. Ataque visual
+        # 8. Imagen: ataque > flip según dirección
         if self.attack_timer > 0:
             self.attack_timer -= 1
-            atk = self.image_base.copy()
-            atk.fill((255, 50, 50), special_flags=pygame.BLEND_RGB_MULT)
-            self.image = atk
+            tinted = self.image_base.copy()
+            tinted.fill((255, 50, 50, 0), special_flags=pygame.BLEND_RGB_ADD)
+            self.image = tinted
         else:
-            # Flip según dirección
-            if self.velocity_x < 0:
-                self.image = self.image_flip
-            else:
-                self.image = self.image_base
+            self.image        = self.image_flip if self.velocity_x < 0 else self.image_base
             self.is_attacking = False
 
-    # --- Acciones de Voz ---
+    def draw_with_bob(self, surface):
+        """Blitea el sprite aplicando el offset de bob vertical."""
+        draw_pos = (self.rect.x, self.rect.y + self._bob_offset)
+        surface.blit(self.image, draw_pos)
+
+    # ── Acciones de voz ──────────────────────────────────────────────────────
     def queue_jump(self):
         if self.coyote_frames > 0 and not self.is_jumping:
             self.velocity_y    = self.jump_power
@@ -267,54 +313,78 @@ class Player(pygame.sprite.Sprite):
         else:
             self.jump_buffer = 30
 
-    def run(self):
-        self.velocity_x = self.speed
-
-    def stop(self):
-        self.velocity_x = 0
-
+    def run(self):    self.velocity_x = self.speed
+    def stop(self):   self.velocity_x = 0
     def attack(self):
         self.attack_timer = 20
         self.is_attacking = True
 
 
 # ==========================================
-# 5. HUD FUNCTIONS (pre-renderiza piezas fijas)
+# 5. HUD — Panel Neón semi-transparente
 # ==========================================
-def build_hud_bg(font_sm):
-    """Crea el panel de fondo del HUD una sola vez."""
-    surf = pygame.Surface((320, 64), pygame.SRCALPHA)
-    surf.fill((20, 10, 40, 180))
-    pygame.draw.rect(surf, (160, 100, 220), surf.get_rect(), 2, border_radius=10)
-    label = font_sm.render("🎤  VOICE-QUEST", True, (200, 160, 255))
-    surf.blit(label, (12, 6))
+MAX_LIVES = 5
+
+def build_hud_bg():
+    """Panel base del HUD generado una sola vez (200px de alto para íconos + barra)."""
+    surf = pygame.Surface((340, 82), pygame.SRCALPHA)
+    # Fondo oscuro cósmico
+    pygame.draw.rect(surf, C_HUD_BG, surf.get_rect(), border_radius=12)
+    # Borde doble: interno claro, externo púrpura
+    pygame.draw.rect(surf, C_HUD_BORDER, surf.get_rect(), 2, border_radius=12)
+    pygame.draw.rect(surf, (80, 40, 140), surf.get_rect().inflate(-4, -4), 1, border_radius=10)
+    # Label "VOICE-QUEST" grabado
+    try:
+        f = pygame.font.SysFont("Consolas", 11, bold=True)
+    except:
+        f = pygame.font.Font(None, 14)
+    lbl = f.render("★  VOICE-QUEST  ★", True, C_HUD_LABEL)
+    surf.blit(lbl, (surf.get_width()//2 - lbl.get_width()//2, 5))
     return surf
 
 
 def draw_hud(screen, hud_bg, font_sm, font_md, last_command, cmd_color,
-             last_cmd_time, debounce_secs):
-    """Blit del panel + texto dinámico + barra de cooldown en cada frame."""
-    screen.blit(hud_bg, (10, 10))
+             last_cmd_time, debounce_secs, lives):
+    HX, HY = 10, 10
 
-    # Texto del ultimo comando
-    cmd_surf = font_md.render(last_command, True, cmd_color)
-    screen.blit(cmd_surf, (22, 34))
+    # 1. Panel de fondo cacheado
+    screen.blit(hud_bg, (HX, HY))
 
-    # Barra de cooldown
+    # 2. Círculos de vidas (corazones simulados)
+    for i in range(MAX_LIVES):
+        col = C_LIFE_ON if i < lives else C_LIFE_OFF
+        cx  = HX + 16 + i * 24
+        cy  = HY + 22
+        pygame.draw.circle(screen, col, (cx, cy), 8)
+        # Destello superior simulando volumen 3D
+        pygame.draw.circle(screen, (255, 200, 210) if i < lives else (100, 60, 100),
+                           (cx - 2, cy - 3), 3)
+
+    # 3. Texto del comando reconocido (con sombra para legibilidad)
+    cmd_text = last_command[:26]   # Truncar si es muy largo
+    shadow   = font_md.render(cmd_text, True, (0, 0, 0))
+    cmd_surf = font_md.render(cmd_text, True, cmd_color)
+    screen.blit(shadow,   (HX + 15, HY + 41))
+    screen.blit(cmd_surf, (HX + 14, HY + 40))
+
+    # 4. Barra de cooldown tipo "carga de habilidad"
     elapsed  = time.time() - last_cmd_time
     progress = min(elapsed / debounce_secs, 1.0)
-    bar_w    = 296
-    bar_h    = 6
-    bar_x, bar_y = 14, 72
-    pygame.draw.rect(screen, (60, 30, 80),   (bar_x, bar_y, bar_w, bar_h), border_radius=3)
-    fill_w = int(bar_w * progress)
-    color  = C_CMD_ACTIVE if progress >= 1.0 else (200, 100, 240)
+    bx, by   = HX + 14, HY + 68
+    bw, bh   = 312, 7
+    # Fondo de la barra
+    pygame.draw.rect(screen, (40, 20, 70), (bx, by, bw, bh), border_radius=4)
+    # Relleno de progreso con color dinámico
+    fill_w = int(bw * progress)
     if fill_w > 0:
-        pygame.draw.rect(screen, color, (bar_x, bar_y, fill_w, bar_h), border_radius=3)
+        bar_color = C_CMD_ACTIVE if progress >= 1.0 else (180, 80, 240)
+        pygame.draw.rect(screen, bar_color, (bx, by, fill_w, bh), border_radius=4)
+    # Micro-borde de la barra
+    pygame.draw.rect(screen, C_HUD_BORDER, (bx, by, bw, bh), 1, border_radius=4)
 
 
 # ==========================================
-# 6. MAIN
+# 6. HELPERS DE SISTEMA
 # ==========================================
 def set_game_affinity():
     import psutil, os
@@ -324,51 +394,57 @@ def set_game_affinity():
         pass
 
 
+# ==========================================
+# 7. MAIN LOOP
+# ==========================================
 def main():
     set_game_affinity()
-    print("[Pygame] Inicializando motor gráfico Star Candy Edition...")
+    print("[Pygame] Inicializando motor gráfico Star Candy Adventures...")
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Voice-Quest  ★  Star Candy Edition")
+    pygame.display.set_caption("Voice-Quest  ★  Star Candy Adventures")
     clock  = pygame.time.Clock()
 
-    # --- Fuentes ---
+    # ── Fuentes ──────────────────────────────────────────────────────────────
     pygame.font.init()
     try:
-        font_sm = pygame.font.SysFont("Consolas", 14, bold=True)
-        font_md = pygame.font.SysFont("Consolas", 20, bold=True)
+        font_sm = pygame.font.SysFont("Consolas", 13, bold=True)
+        font_md = pygame.font.SysFont("Consolas", 19, bold=True)
     except:
-        font_sm = pygame.font.SysFont("Arial", 14)
-        font_md = pygame.font.SysFont("Arial", 20)
+        font_sm = pygame.font.Font(None, 16)
+        font_md = pygame.font.Font(None, 22)
 
-    # --- Plataformas flotantes (Rects de colisión + renderizado) ---
+    # ── Plataformas (Rects de física + visual) ────────────────────────────────
     platforms = [
-        pygame.Rect(160, GROUND_Y - 130, 140, 22),
-        pygame.Rect(400, GROUND_Y - 185, 160, 22),
-        pygame.Rect(600, GROUND_Y - 115, 140, 22),
+        pygame.Rect(155, GROUND_Y - 130, 145, 20),
+        pygame.Rect(395, GROUND_Y - 190, 165, 20),
+        pygame.Rect(595, GROUND_Y - 118, 145, 20),
     ]
 
-    # --- PRE-RENDER ÚNICO del escenario estático ---
+    # ── PRE-RENDER ÚNICO (Surface Caching) ────────────────────────────────────
     bg_surface = build_background(WIDTH, HEIGHT, GROUND_Y, platforms)
-    hud_bg     = build_hud_bg(font_sm)
+    hud_bg     = build_hud_bg()
 
-    # --- Sprites ---
-    player      = Player(GROUND_Y, platforms)
-    all_sprites = pygame.sprite.Group(player)
+    # ── Sprites ───────────────────────────────────────────────────────────────
+    player = Player(GROUND_Y, platforms)
 
-    # --- Cola de voz ---
+    # ── Cola y proceso de voz ─────────────────────────────────────────────────
     cmd_queue     = multiprocessing.Queue(maxsize=1)
     voice_process = VoiceController(cmd_queue, settings)
     voice_process.start()
 
-    # --- Estado HUD ---
+    # ── Estado HUD ────────────────────────────────────────────────────────────
     last_command  = "ESPERANDO VOZ..."
     cmd_color     = C_CMD_IDLE
     last_cmd_time = 0.0
+    lives         = MAX_LIVES
 
-    # --- MAIN ENGINE LOOP ---
+    # ─────────────────────────────────────────────────────────────────────────
+    # MAIN ENGINE LOOP
+    # ─────────────────────────────────────────────────────────────────────────
     running = True
     while running:
+        # ── Eventos ──────────────────────────────────────────────────────────
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -376,28 +452,15 @@ def main():
                 if event.key == pygame.K_ESCAPE:
                     running = False
 
-        # --- Consumo de cola: UN comando por frame ---
+        # ── Consumo de cola: UN comando por frame ─────────────────────────────
         try:
-            raw_action = cmd_queue.get_nowait().lower().strip(".,!? ")
-            tokens = set(raw_action.split())
-            last_command  = f"→  {raw_action.upper()}"
+            raw_action    = cmd_queue.get_nowait().lower().strip(".,!? ¡¿")
+            tokens        = set(raw_action.split())
+            last_command  = f"  {raw_action.upper()}"
             cmd_color     = C_CMD_ACTIVE
             last_cmd_time = time.time()
 
             # Prioridad: STOP > ATTACK > RUN > JUMP
-            # Sincronizado con confusion_matrix de voice_engine.py
-            STOP_SET   = {"stop","para","pare","paro","parar","frena","frenar",
-                          "alto","detente","quieto","espera","basta","suficiente",
-                          "halt","bada","badaa","bad","bara"}
-            ATTACK_SET = {"attack","ataca","ataque","atacar","ataco",
-                          "golpea","golpe","golpear","pega","pegar",
-                          "dispara","disparar","adaca"}
-            RUN_SET    = {"run","corre","corra","correr","corres","corriendo",
-                          "avanza","avanzar","mueve","moverse","anda","andar","vete"}
-            JUMP_SET   = {"jump","salta","salte","saltar","salto","saltas",
-                          "brinca","brincar","sube","subir","arriba",
-                          "sawta","salda","sadda","sanda"}
-
             if   tokens & STOP_SET:
                 player.stop()
             elif tokens & ATTACK_SET:
@@ -411,19 +474,23 @@ def main():
         except Exception as e:
             print(f"[Engine] Error en cola: {e}")
 
-        # --- Lógica ---
-        all_sprites.update()
+        # ── Fade del color del comando tras el debounce ───────────────────────
+        if time.time() - last_cmd_time > DEBOUNCE_SECS:
+            cmd_color = C_CMD_IDLE
 
-        # --- Render ---
-        # 1. Un solo blit del escenario pre-renderizado (O(1) para el escenario completo)
+        # ── Lógica del jugador ────────────────────────────────────────────────
+        player.update()
+
+        # ── RENDER ────────────────────────────────────────────────────────────
+        # O(1): un solo blit del Surface maestro pre-renderizado
         screen.blit(bg_surface, (0, 0))
 
-        # 2. Sprites dinámicos (solo Echo)
-        all_sprites.draw(screen)
+        # Jugador con bob vertical procedural
+        player.draw_with_bob(screen)
 
-        # 3. HUD dinámico
+        # HUD dinámico (solo texto + barra cambian cada frame)
         draw_hud(screen, hud_bg, font_sm, font_md,
-                 last_command, cmd_color, last_cmd_time, DEBOUNCE_SECS)
+                 last_command, cmd_color, last_cmd_time, DEBOUNCE_SECS, lives)
 
         pygame.display.flip()
         clock.tick(FPS)
