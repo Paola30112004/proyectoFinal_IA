@@ -388,14 +388,15 @@ def main():
             # Sincronizado con confusion_matrix de voice_engine.py
             STOP_SET   = {"stop","para","pare","paro","parar","frena","frenar",
                           "alto","detente","quieto","espera","basta","suficiente",
-                          "halt","bada","badaa","bad"}
+                          "halt","bada","badaa","bad","bara"}
             ATTACK_SET = {"attack","ataca","ataque","atacar","ataco",
                           "golpea","golpe","golpear","pega","pegar",
-                          "dispara","disparar"}
+                          "dispara","disparar","adaca"}
             RUN_SET    = {"run","corre","corra","correr","corres","corriendo",
                           "avanza","avanzar","mueve","moverse","anda","andar","vete"}
             JUMP_SET   = {"jump","salta","salte","saltar","salto","saltas",
-                          "brinca","brincar","sube","subir","arriba","sawta"}
+                          "brinca","brincar","sube","subir","arriba",
+                          "sawta","salda","sadda","sanda"}
 
             if   tokens & STOP_SET:
                 player.stop()

@@ -117,7 +117,7 @@ class VoiceController(multiprocessing.Process):
                 "detente", "quieto", "espera", "suficiente", "basta",
                 # Distorsiones de microfono de baja ganancia (documentadas en logs)
                 "pa", "par",
-                "bada", "badaa", "badá", "bad", "bana",
+                "bada", "badaa", "badá", "bad", "bana", "bara",
                 "va", "ada", "vamos",
                 # Alucinaciones de relleno de Whisper en silencio
                 "aha", "ah", "eh", "hm",
@@ -134,7 +134,7 @@ class VoiceController(multiprocessing.Process):
                 "golpea", "golpe", "golpear", "pega", "pegar",
                 "dispara", "disparar", "disparo",
                 # Distorsiones documentadas de microfono
-                "etaca", "atac", "attaca",
+                "etaca", "atac", "attaca", "adaca",
                 # Frase 'a la' que Whisper produce por el microfono
                 "a"
             ],
@@ -162,7 +162,7 @@ class VoiceController(multiprocessing.Process):
                 "brinca", "brincar", "brincal", "brinca",
                 "sube", "subir", "arriba",
                 # Distorsiones documentadas de microfono de baja ganancia
-                "sawta", "sauta", "alta", "salt",
+                "sawta", "sauta", "alta", "salt", "salda", "sadda", "sanda",
                 # Anglicismo
                 "jump"
             ]
