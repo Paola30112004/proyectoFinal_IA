@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Entornos virtuales
+venv/
+env/
+.env
+.venv
+
+# Modelos de IA (muy pesados, no subir)
+models/
+*.bin
+*.pt
+*.gguf
+*.safetensors
+
+# Logs y temporales
+*.log
+*.tmp
+*.bak
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Cache de faster-whisper (se re-descarga automáticamente)
+~/.cache/huggingface/

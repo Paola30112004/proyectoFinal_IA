@@ -1,0 +1,19 @@
+{
+    "audio_settings": {
+        "microphone_index": 1,
+        "sample_rate": 16000,
+        "chunk_size": 1024,
+        "channels": 1
+    },
+    "ai_model": {
+        "whisper_model": "tiny",
+        "latency_threshold_ms": 500,
+        "confidence_score": 0.65
+    },
+    "commands": {
+        "jump": ["salta", "saltar", "jump", "arriba"],
+        "run": ["corre", "correr", "run", "rápido"],
+        "attack": ["ataca", "golpe", "attack", "fuego"],
+        "stop": ["para", "detente", "stop", "quieto"]
+    }
+}
