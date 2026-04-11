@@ -6,6 +6,7 @@ import bisect
 import multiprocessing
 import numpy as np
 import pygame
+import random
 from voice_engine import VoiceController
 
 # ==========================================
@@ -73,125 +74,30 @@ JUMP_SET   = {"jump","salta","salte","saltar","salto","saltas",
 
 
 # ==========================================
-# 3. SURFACE CACHING — Escenario Estático
+# PRE-CÁLCULO: POOL DE TEXTURAS DE BALCONES
 # ==========================================
-def _lerp_color(c1, c2, t):
-    return (
-        int(c1[0] + (c2[0] - c1[0]) * t),
-        int(c1[1] + (c2[1] - c1[1]) * t),
-        int(c1[2] + (c2[2] - c1[2]) * t),
-    )
+def load_platform_textures(target_height):
+    """Carga y escala las texturas proporcionalmente en RAM una sola vez."""
+    textures = []
+    for i in range(1, 7):
+        try:
+            raw_img = pygame.image.load(f"components/Elementos_Espaciales1/balcon ({i}).png").convert_alpha()
+            aspect = raw_img.get_width() / raw_img.get_height()
+            scaled_img = pygame.transform.scale(raw_img, (int(target_height * aspect), target_height))
+            textures.append(scaled_img)
+        except Exception as e:
+            print(f"[Engine] Fallo cargando balcon ({i}): {e}")
+            fallback = pygame.Surface((target_height * 3, target_height))
+            fallback.fill((150, 150, 150))
+            textures.append(fallback)
+    return textures
 
-def build_background(width, height, ground_y):
-    """
-    Renderiza UNA SOLA VEZ el escenario del cielo (parallax lejano).
-    En el loop principal se dibuja dos veces para efecto de scroll infinito continuo.
-    """
-    surf = pygame.Surface((width, height))
+class Platform(pygame.Rect):
+    def __init__(self, x, y, texture_index):
+        self.image = PLATFORM_TEXTURES[texture_index % len(PLATFORM_TEXTURES)]
+        # Super init como un Rect que calza exactamente con la imagen
+        super().__init__(x, y, self.image.get_width(), self.image.get_height())
 
-    # ── Gradiente de cielo en 3 tramos ──────────────────────────────────────
-    band_h = height // 3
-    for y in range(height):
-        if y < band_h:
-            c = _lerp_color(C_SKY_TOP, C_SKY_MID, y / band_h)
-        elif y < band_h * 2:
-            c = _lerp_color(C_SKY_MID, C_SKY_BOT, (y - band_h) / band_h)
-        else:
-            c = C_SKY_BOT
-        pygame.draw.line(surf, c, (0, y), (width, y))
-
-    # ── Nebulosas difusas (Surfaces con alpha bliteadas) ─────────────────────
-    neb = pygame.Surface((260, 120), pygame.SRCALPHA)
-    pygame.draw.ellipse(neb, C_NEBULA_A, neb.get_rect())
-    surf.blit(neb, (80, 30))
-    neb2 = pygame.Surface((200, 90), pygame.SRCALPHA)
-    pygame.draw.ellipse(neb2, C_NEBULA_B, neb2.get_rect())
-    surf.blit(neb2, (480, 60))
-
-    # ── Estrellas Artísticas HD (componentes estrella 1-4) ────────────────────
-    import random
-    rng = random.Random(42)
-    try:
-        stars_assets = []
-        for i in range(1, 5):
-            path = f"components/estrella ({i}).png"
-            stars_assets.append(pygame.image.load(path).convert_alpha())
-        
-        # Pesos: prioridad a estrella (2) y (3) -> indice 1 y 2
-        # estrella(1): 10%, estrella(2): 35%, estrella(3): 45%, estrella(4): 10%
-        star_pool = [0]*10 + [1]*35 + [2]*45 + [3]*10
-        
-        for _ in range(31):  # Reducido un 10% (35 -> 31) para menor saturación
-            idx   = rng.choice(star_pool)
-            scale = rng.uniform(0.4, 0.9) # Estrellas el doble de grandes o más
-            raw_s = stars_assets[idx]
-            sw    = int(raw_s.get_width() * scale)
-            sh    = int(raw_s.get_height() * scale)
-            star_inst = pygame.transform.scale(raw_s, (sw, sh))
-            sx = rng.randint(0, width - sw)
-            sy = rng.randint(0, ground_y - 120)
-            surf.blit(star_inst, (sx, sy))
-            
-        # Puntos de "Polvo Estelar" (procedimental sutil para textura)
-        for _ in range(72): # Reducido un 10% (80 -> 72)
-            sx = rng.randint(0, width); sy = rng.randint(0, ground_y - 100)
-            pygame.draw.circle(surf, (255, 255, 255, 150), (sx, sy), rng.randint(1, 2))
-            
-    except Exception as e:
-        print(f"[Cielo] Error cargando estrellas: {e}")
-
-    # ── Nubes Artísticas HD (componentes nube 1-3) ───────────────────────────
-    try:
-        clouds_assets = [
-            pygame.image.load(f"components/nube{i}.png").convert_alpha() 
-            for i in range(1, 4)
-        ]
-        # Posiciones dispersas (Reducido a 6 nubes para menos saturación)
-        cloud_configs = [
-            (50, 30, 0, 0.55), (320, 100, 1, 0.6), (620, 40, 2, 0.65), 
-            (900, 110, 0, 0.5), (1120, 30, 1, 0.55), 
-            (800, 190, 0, 0.4) # Eliminada una nube central baja
-        ]
-        for cx, cy, c_idx, c_scale in cloud_configs:
-            raw_c = clouds_assets[c_idx]
-            cw    = int(raw_c.get_width() * c_scale)
-            ch    = int(raw_c.get_height() * c_scale)
-            cloud_inst = pygame.transform.scale(raw_c, (cw, ch))
-            surf.blit(cloud_inst, (cx, cy))
-            
-    except Exception as e:
-        print(f"[Cielo] Error cargando nubes: {e}")
-
-    return surf
-
-def build_trees_layer(width, height, ground_y):
-    """
-    Capa de Parallax Media: Dibuja los árboles una sola vez en un Surface con transparencia.
-    El ancho debe ser el de una pantalla (WIDTH), ya que lo repetiremos en el loop principal
-    con un multiplicador de scroll parallax (ej: 0.7x).
-    """
-    surf = pygame.Surface((width, height), pygame.SRCALPHA)
-    try:
-        t1 = pygame.image.load("components/arboles1.png").convert_alpha()
-        t2 = pygame.image.load("components/arboles2.png").convert_alpha()
-        import random
-        rng = random.Random(99) # semilla distinta al cielo
-        
-        # Generar un bioma estático de árboles que cubra 1 pantalla.
-        for tx in range(30, width, 80):
-            if rng.random() > 0.3: # 70% chance de arbol
-                is_giant = (rng.random() > 0.85) # 15% chance gigante
-                scale = rng.uniform(1.8, 2.1) if is_giant else rng.uniform(0.65, 1.4)
-                t_type = 1 if rng.random() > 0.5 else 2
-                raw = t1 if t_type == 1 else t2
-                tw = int(120 * scale)
-                th = int(160 * scale)
-                tree_inst = pygame.transform.scale(raw, (tw, th))
-                surf.blit(tree_inst, (tx + rng.randint(-20, 20), ground_y - th + 10))
-    except Exception as e:
-        print(f"[Cielo] Error cargando capa de árboles: {e}")
-        
-    return surf
 
 
 
@@ -199,12 +105,16 @@ def build_trees_layer(width, height, ground_y):
 # 4. ENTIDADES SECUNDARIAS (Enemigos y Proyectiles)
 # ==========================================
 class Projectile(pygame.sprite.Sprite):
+    _CACHED_SURF = None
     def __init__(self, x, y, facing_right):
         super().__init__()
-        self.image = pygame.Surface((24, 24), pygame.SRCALPHA)
-        # Fallback gráfico: Estrella / Bola de energía amarilla
-        pygame.draw.circle(self.image, (255, 255, 0), (12, 12), 12)
-        pygame.draw.circle(self.image, (255, 200, 0), (12, 12), 8)
+        if Projectile._CACHED_SURF is None:
+            Projectile._CACHED_SURF = pygame.Surface((40, 40), pygame.SRCALPHA)
+            pygame.draw.circle(Projectile._CACHED_SURF, (255, 255, 0), (20, 20), 20)
+            pygame.draw.circle(Projectile._CACHED_SURF, (255, 200, 0), (20, 20), 14)
+            pygame.draw.line(Projectile._CACHED_SURF, (255,255,255), (20,5), (20,35), 2)
+            pygame.draw.line(Projectile._CACHED_SURF, (255,255,255), (5,20), (35,20), 2)
+        self.image = Projectile._CACHED_SURF
         self.rect = self.image.get_rect()
         self.rect.center = (x, y)
         self.velocity_x = 18 if facing_right else -18
@@ -212,26 +122,89 @@ class Projectile(pygame.sprite.Sprite):
     def update(self):
         self.rect.x += self.velocity_x
 
+class EnemyProjectile(pygame.sprite.Sprite):
+    _CACHED_SURF = None
+    def __init__(self, x, y, direction_x):
+        super().__init__()
+        if EnemyProjectile._CACHED_SURF is None:
+            EnemyProjectile._CACHED_SURF = pygame.Surface((20, 20), pygame.SRCALPHA)
+            pygame.draw.circle(EnemyProjectile._CACHED_SURF, (255, 50, 50), (10, 10), 10)
+            pygame.draw.circle(EnemyProjectile._CACHED_SURF, (255, 100, 0), (10, 10), 6)
+        self.image = EnemyProjectile._CACHED_SURF
+        self.rect = self.image.get_rect()
+        self.rect.center = (x, y)
+        self.velocity_x = direction_x * 8
+        
+    def update(self):
+        self.rect.x += self.velocity_x
+
 class Enemy(pygame.sprite.Sprite):
+    _CACHED_IMAGES = {}
+
     def __init__(self, x, y):
         super().__init__()
-        self.image = pygame.Surface((40, 40))
-        self.image.fill((255, 50, 50)) # Cubo rojo (Fallback)
-        # Ojos amenazantes
-        pygame.draw.rect(self.image, (0, 0, 0), (8, 8, 8, 8))
-        pygame.draw.rect(self.image, (0, 0, 0), (24, 8, 8, 8))
+        self.velocity_x = 0
+        self.velocity_y = 0
+        self.image = None
+        self.rect = None
+        self._visual_offset_y = 0
+
+    def _lazy_load_image(self, asset_name, scale):
+        key = f"{asset_name}_{scale}"
+        if key not in Enemy._CACHED_IMAGES:
+            try:
+                img = pygame.image.load(asset_name).convert_alpha()
+                Enemy._CACHED_IMAGES[key] = pygame.transform.scale(img, scale)
+            except Exception as e:
+                print(f"[Enemy] Error cargando sprite {asset_name}: {e}")
+                fallback = pygame.Surface(scale)
+                fallback.fill((255, 0, 255))
+                Enemy._CACHED_IMAGES[key] = fallback
+        return Enemy._CACHED_IMAGES[key]
+
+    def update(self, *args, **kwargs):
+        pass
+
+    def draw(self, surface, camera_x):
+        if not self.image: return
+        img = self.image
+        # Mirando a la derecha (si la velocidad es positiva o si está marcado explícitamente)
+        facing_right = getattr(self, 'facing_right', self.velocity_x > 0)
+        if facing_right:
+            img = pygame.transform.flip(self.image, True, False)
+        draw_pos = (self.rect.x - camera_x, self.rect.y + self._visual_offset_y)
+        surface.blit(img, draw_pos)
+
+
+class FlowerEnemy(Enemy):
+    def __init__(self, x, y):
+        super().__init__(x, y)
+        self.walk_frames = []
+        try:
+            for i in range(1, 14):
+                path = f"components/Flor Caminante/Flor Caminante ({i}).png"
+                img = self._lazy_load_image(path, (97, 119))
+                self.walk_frames.append(img)
+        except Exception as e:
+            print(f"[Enemy] Fallback Flor Caminante: {e}")
+            fallback = pygame.Surface((97, 119))
+            fallback.fill((100, 200, 100))
+            self.walk_frames = [fallback]
+
+        self.frame_index = 0
+        self.animation_speed = 0.18 # Timming ajustado. Camina a (V=3), levemente más lento que Echo (V=4) => 10.8 FPS Visual (1.2s por zancada pesada)
+        self.image = self.walk_frames[0]
+        
         self.rect = self.image.get_rect()
         self.rect.centerx = x
         self.rect.bottom = y
-        self.velocity_x = -3 # IA: Inicia patrullando hacia la izq
+        self.velocity_x = -3
         self.velocity_y = 0
         self.gravity = 0.65
-        
-    def update(self, visible_platforms):
-        # Movimiento horizontal Ping-Pong
+        self.facing_right = False
+
+    def update(self, visible_platforms, **kwargs):
         self.rect.x += self.velocity_x
-        
-        # Gravedad Simple
         self.velocity_y += self.gravity
         self.rect.y += int(self.velocity_y)
         
@@ -241,20 +214,151 @@ class Enemy(pygame.sprite.Sprite):
         if self.velocity_y >= 0:
             for plat in visible_platforms:
                 if (self.rect.bottom >= plat.top and 
-                    self.rect.bottom <= plat.top + 18 and 
+                    self.rect.bottom <= plat.top + 30 and 
                     self.rect.right > plat.left and 
                     self.rect.left < plat.right):
-                    self.rect.bottom = plat.top
+                    self.rect.bottom = plat.top + 20 # Hundido para contacto visual
                     self.velocity_y = 0.0
                     on_ground = True
                     current_platform = plat
                     break
-                    
-        # Detección de caída (Edge Detection)
+        
+        if not on_ground and self.rect.bottom >= GROUND_Y + 20:
+            self.rect.bottom = GROUND_Y + 20
+            self.velocity_y = 0.0
+            on_ground = True
+            
+        # Detección de Bordes Inteligente en Plataformas
         if on_ground and current_platform:
-            if self.rect.right > current_platform.right or self.rect.left < current_platform.left:
-                self.velocity_x *= -1 # Invertir dirección de patrulla
-                self.rect.x += self.velocity_x * 2 # Pequeño empujón seguro
+            if self.rect.right - 10 > current_platform.right or self.rect.left + 10 < current_platform.left:
+                self.velocity_x *= -1
+                self.rect.x += self.velocity_x * 2
+        
+        # Actualizar orientación visual
+        self.facing_right = self.velocity_x > 0
+        
+        # Animación de las patas y Fliping hacia Echo
+        self.frame_index += self.animation_speed
+        if self.frame_index >= len(self.walk_frames):
+            self.frame_index = 0
+            
+        current_frame = self.walk_frames[int(self.frame_index)]
+        self.image = current_frame if self.facing_right else pygame.transform.flip(current_frame, True, False)
+
+
+class GargoyleEnemy(Enemy):
+    def __init__(self, x, y):
+        super().__init__(x, y)
+        self.flight_frames = []
+        try:
+            for i in range(1, 12):
+                path = f"components/gargola/gargola ({i}).png"
+                img = self._lazy_load_image(path, (110, 100))
+                self.flight_frames.append(img)
+        except Exception as e:
+            print(f"[Enemy] Fallback Gárgola: {e}")
+            fallback = pygame.Surface((110, 100))
+            fallback.fill((100, 20, 100))
+            self.flight_frames = [fallback]
+
+        self.frame_index = 0
+        self.animation_speed = 0.25 # Timming ajustado. Alas de piedra: 15 FPS Visual (0.73s por aleteo) - Menos vibración, más peso
+        self.image = self.flight_frames[0]
+        
+        self.rect = self.image.get_rect()
+        self.rect.centerx = x
+        self.rect.centery = y - 100
+        self.base_y = self.rect.centery
+        self.velocity_x = -2
+        self.anim_tick = random.random() * 10
+        self.gravity = 0 # No cae
+
+    def update(self, player_x, **kwargs):
+        self.rect.x += self.velocity_x
+        self.anim_tick += 0.05
+        self.rect.centery = self.base_y + int(math.sin(self.anim_tick) * 50)
+        
+        # Deadzone de 20px
+        if abs(self.rect.centerx - player_x) > 20:
+            if self.rect.centerx > player_x:
+                self.velocity_x = -2
+            else:
+                self.velocity_x = 2
+                
+        # Rotación visual adaptativa
+        self.facing_right = self.velocity_x > 0
+        
+        # Animación secuencial de aleteo y Fliping
+        self.frame_index += self.animation_speed
+        if self.frame_index >= len(self.flight_frames):
+            self.frame_index = 0
+            
+        current_frame = self.flight_frames[int(self.frame_index)]
+        self.image = current_frame if self.facing_right else pygame.transform.flip(current_frame, True, False)
+
+
+class ShooterFlower(Enemy):
+    def __init__(self, x, y):
+        super().__init__(x, y)
+        self.idle_frames = []
+        try:
+            for i in range(1, 12):
+                path = f"components/Flor Tiradora/Flor Tiradora ({i}).png"
+                img = self._lazy_load_image(path, (81, 119))
+                self.idle_frames.append(img)
+        except Exception as e:
+            print(f"[Enemy] Fallback Flor Tiradora: {e}")
+            fallback = pygame.Surface((81, 119))
+            fallback.fill((200, 100, 100))
+            self.idle_frames = [fallback]
+
+        self.frame_index = 0
+        self.animation_speed = 0.10 # Timming ajustado. Respiración vegetal (Idle lento): 6 FPS Visual (casi 2 segundos por ciclo)
+        self.image = self.idle_frames[0]
+        
+        self.rect = self.image.get_rect()
+        self.rect.centerx = x
+        self.rect.bottom = y
+        self.gravity = 0.65
+        self.velocity_x = 0
+        self.last_shot_time = pygame.time.get_ticks()
+        self.facing_right = False
+
+    def update(self, visible_platforms, player_x, enemy_projectiles, **kwargs):
+        # Asentamiento por gravedad (No patrulla horizontal)
+        self.velocity_y += self.gravity
+        self.rect.y += int(self.velocity_y)
+        
+        if self.velocity_y >= 0:
+            for plat in visible_platforms:
+                if (self.rect.bottom >= plat.top and 
+                    self.rect.bottom <= plat.top + 30 and 
+                    self.rect.right > plat.left and 
+                    self.rect.left < plat.right):
+                    self.rect.bottom = plat.top + 20 # Hundido
+                    self.velocity_y = 0.0
+                    break
+        if self.rect.bottom >= GROUND_Y + 20:
+            self.rect.bottom = GROUND_Y + 20
+            self.velocity_y = 0.0
+            
+        # Girar para mirar al jugador
+        self.facing_right = player_x > self.rect.centerx
+        
+        # Animación de respiración e Inteligencia de Mirada
+        self.frame_index += self.animation_speed
+        if self.frame_index >= len(self.idle_frames):
+            self.frame_index = 0
+            
+        current_frame = self.idle_frames[int(self.frame_index)]
+        self.image = current_frame if self.facing_right else pygame.transform.flip(current_frame, True, False)
+
+        # Mecánica de disparo estática
+        now = pygame.time.get_ticks()
+        if now - self.last_shot_time > 7500:
+            self.last_shot_time = now
+            direction = 1 if player_x > self.rect.centerx else -1
+            enemy_projectiles.append(EnemyProjectile(self.rect.centerx, self.rect.centery, direction))
 
 
 # ==========================================
@@ -264,24 +368,44 @@ class Player(pygame.sprite.Sprite):
     def __init__(self, ground_y, platforms):
         super().__init__()
 
-        # ── Carga del sprite (con fallback a cápsula azul) ──────────────────
+        # ── Carga de motor de animación (Pre-cálculo masivo) ───────────
+        self.frames_right = []
+        self.frames_left = []
+        self.attack_right = []
+        self.attack_left = []
+        
         try:
-            raw = pygame.image.load("components/echo_idle.png").convert_alpha()
-            # 130x140: Ahora con ancho extra para que se vea robusto y 'gordito'
-            self.image_base = pygame.transform.scale(raw, (130, 140))
-            print("[Player] Sprite components/echo_idle.png cargado y ajustado (130x140).")
+            for i in range(1, 14):
+                path = f"components/echo/echo ({i}).png"
+                img = pygame.image.load(path).convert_alpha()
+                base_scaled = pygame.transform.scale(img, (90, 140))
+                
+                # Pre-calcular variaciones
+                base_left = pygame.transform.flip(base_scaled, True, False)
+                
+                atk_right = base_scaled.copy()
+                atk_right.fill((255, 50, 50, 0), special_flags=pygame.BLEND_RGB_ADD)
+                
+                atk_left = base_left.copy()
+                atk_left.fill((255, 50, 50, 0), special_flags=pygame.BLEND_RGB_ADD)
+                
+                self.frames_right.append(base_scaled)
+                self.frames_left.append(base_left)
+                self.attack_right.append(atk_right)
+                self.attack_left.append(atk_left)
+            print("[Player] 13 cuadros de animación cargados (" + str(len(self.frames_right)) + ")")
         except Exception as e:
-            print(f"[Player] Fallback: {e}")
-            self.image_base = pygame.Surface((40, 52), pygame.SRCALPHA)
-            # Cápsula azul degradada como fallback premium
-            for row in range(52):
-                t   = row / 52
-                col = _lerp_color(C_FALLBACK, (30, 80, 160), t)
-                pygame.draw.line(self.image_base, col, (4, row), (36, row))
-            pygame.draw.rect(self.image_base, (140, 210, 255), (4, 0, 32, 52), 2, border_radius=8)
+            print(f"[Player] Fallback de Animación: {e}")
+            fallback_surf = pygame.Surface((90, 140))
+            fallback_surf.fill((150, 150, 150))
+            self.frames_right = [fallback_surf]
+            self.frames_left = [fallback_surf]
+            self.attack_right = [fallback_surf]
+            self.attack_left = [fallback_surf]
 
-        self.image_flip = pygame.transform.flip(self.image_base, True, False)
-        self.image      = self.image_base.copy()
+        self.frame_index = 0
+        self.animation_speed = 0.25 # Timming ajustado. Echo V=4 -> 15 FPS Visual (0.86s por ciclo completo). Más dinámico.
+        self.image = self.frames_right[self.frame_index]
         self.rect       = self.image.get_rect()
         self.rect.x     = 80
         self.rect.y     = ground_y - self.rect.height
@@ -292,7 +416,7 @@ class Player(pygame.sprite.Sprite):
         self.target_velocity_x = 0  # Velocidad deseada (para recuperar el ritmo tras knockback)
         self.speed       = 4
         self.gravity     = 0.65
-        self.jump_power  = -21 # Incrementado un 50% para salto más alto
+        self.jump_power  = -24 # Incrementado para mayor altura
         self.is_jumping  = False
         # Bajamos al personaje 15px extra para que se hunda más en el diseño visual del suelo
         self.ground_y    = ground_y + 15
@@ -310,9 +434,9 @@ class Player(pygame.sprite.Sprite):
         self.attack_timer  = 0
         self.is_attacking  = False
 
-        # ── Bob de pasos ─────────────────────────────────────────────────────
-        self.bounce_tick   = 0
-        self._bob_offset   = 0     # Offset Y visual calculado en update()
+        # ── Animación estructural ─────────────────────────────────────────────
+        # Ya no usamos _bob_offset porque la animación provee su propio movimiento
+        self._bob_offset = 0
 
     def take_damage(self):
         if self.invulnerable_timer == 0:
@@ -353,6 +477,8 @@ class Player(pygame.sprite.Sprite):
         if self.rect.bottom >= self.ground_y:
             self.rect.bottom = self.ground_y
             self.velocity_y  = 0.0
+            if self.is_jumping: # Reseteo absoluto al aterrizar
+                self.velocity_x = self.target_velocity_x
             self.is_jumping  = False
             on_ground        = True
 
@@ -360,11 +486,13 @@ class Player(pygame.sprite.Sprite):
         if self.velocity_y >= 0:
             for plat in visible_platforms:
                 if (self.rect.bottom >= plat.top
-                        and self.rect.bottom <= plat.top + 18
+                        and self.rect.bottom <= plat.top + 20
                         and self.rect.right  > plat.left + 4
                         and self.rect.left   < plat.right - 4):
                     self.rect.bottom = plat.top
                     self.velocity_y  = 0.0
+                    if self.is_jumping: # Reseteo absoluto al aterrizar
+                        self.velocity_x = self.target_velocity_x
                     self.is_jumping  = False
                     on_ground        = True
                     break
@@ -383,14 +511,13 @@ class Player(pygame.sprite.Sprite):
         if self.jump_buffer > 0:
             self.jump_buffer -= 1
 
-        # 7. Bob procedural de pasos (solo en suelo y corriendo)
+        # 7. Ciclo de Animación por cuadros
         if self.velocity_x != 0 and on_ground:
-            self.bounce_tick += 1
-            self._bob_offset  = int(math.sin(self.bounce_tick * 0.30) * 2)
+            self.frame_index += self.animation_speed
+            if self.frame_index >= len(self.frames_right):
+                self.frame_index = 0
         else:
-            if self.velocity_x == 0:
-                self.bounce_tick = 0
-            self._bob_offset = 0
+            self.frame_index = 0 # Postura estática de descanso
 
         # Update variables de acción y disparo
         if self.velocity_x > 0: self.facing_right = True
@@ -402,15 +529,18 @@ class Player(pygame.sprite.Sprite):
         for p in self.projectiles[:]:
             p.update()
 
-        # 8. Imagen: ataque > flip según dirección
-        if self.attack_timer > 0:
-            self.attack_timer -= 1
-            tinted = self.image_base.copy()
-            tinted.fill((255, 50, 50, 0), special_flags=pygame.BLEND_RGB_ADD)
-            self.image = tinted if self.facing_right else pygame.transform.flip(tinted, True, False)
+        # 8. Render de memoria O(1)
+        target_list = self.frames_right
+        if self.is_attacking:
+            target_list = self.attack_right if self.facing_right else self.attack_left
+            if self.attack_timer > 0:
+                self.attack_timer -= 1
+            else:
+                self.is_attacking = False
         else:
-            self.image        = self.image_base if self.facing_right else self.image_flip
-            self.is_attacking = False
+            target_list = self.frames_right if self.facing_right else self.frames_left
+
+        self.image = target_list[int(self.frame_index)]
 
     def draw_with_bob(self, surface):
         """Blitea el sprite aplicando el offset de bob vertical y el parpadeo de invulnerabilidad."""
@@ -424,6 +554,9 @@ class Player(pygame.sprite.Sprite):
     def queue_jump(self):
         if self.coyote_frames > 0 and not self.is_jumping:
             self.velocity_y    = self.jump_power
+            # Salto largo si estamos en movimiento
+            if self.velocity_x != 0:
+                self.velocity_x = self.speed * 1.5
             self.is_jumping    = True
             self.coyote_frames = 0
         else:
@@ -470,7 +603,7 @@ def build_hud_bg():
 
 
 def draw_hud(screen, hud_bg, font_sm, font_md, last_command, cmd_color,
-             last_cmd_time, debounce_secs, lives):
+             last_cmd_time, debounce_secs, lives, hud_cache):
     HX, HY = 10, 10
 
     # 1. Panel de fondo cacheado
@@ -486,12 +619,16 @@ def draw_hud(screen, hud_bg, font_sm, font_md, last_command, cmd_color,
         pygame.draw.circle(screen, (255, 200, 210) if i < lives else (100, 60, 100),
                            (cx - 2, cy - 3), 3)
 
-    # 3. Texto del comando reconocido (con sombra para legibilidad)
-    cmd_text = last_command[:26]   # Truncar si es muy largo
-    shadow   = font_md.render(cmd_text, True, (0, 0, 0))
-    cmd_surf = font_md.render(cmd_text, True, cmd_color)
-    screen.blit(shadow,   (HX + 15, HY + 41))
-    screen.blit(cmd_surf, (HX + 14, HY + 40))
+    # 3. Texto del comando reconocido (con sombra para legibilidad y caché de render)
+    if hud_cache["last_command"] != last_command or hud_cache["last_color"] != cmd_color:
+        cmd_text = last_command[:26]   # Truncar si es muy largo
+        hud_cache["shadow_surf"] = font_md.render(cmd_text, True, (0, 0, 0))
+        hud_cache["cmd_surf"]    = font_md.render(cmd_text, True, cmd_color)
+        hud_cache["last_command"] = last_command
+        hud_cache["last_color"] = cmd_color
+        
+    screen.blit(hud_cache["shadow_surf"], (HX + 15, HY + 41))
+    screen.blit(hud_cache["cmd_surf"], (HX + 14, HY + 40))
 
     # 4. Barra de cooldown tipo "carga de habilidad"
     elapsed  = time.time() - last_cmd_time
@@ -540,75 +677,84 @@ def main():
         font_sm = pygame.font.Font(None, 16)
         font_md = pygame.font.Font(None, 22)
 
-    # ── GENERACIÓN PROCEDIMENTAL DEL NIVEL (31,200 px) ────────────────────────
-    import random
+    # ── GENERACIÓN DEL NUEVO FONDO Y BALCONES MUNDIALES ───────────────────────
+    global PLATFORM_TEXTURES
+    PLATFORM_TEXTURES = load_platform_textures(45) # Altura maestra de balcones para colisión precisa
+
+    try:
+        raw_bg = pygame.image.load("components/Elementos_Espaciales1/Fondo.png").convert()
+        # Escalar preservando aspecto para ajustarse a 720p sin distorsionarse
+        aspect_bg = raw_bg.get_width() / raw_bg.get_height()
+        bg_espacial = pygame.transform.scale(raw_bg, (int(HEIGHT * aspect_bg), HEIGHT))
+    except Exception as e:
+        print(f"[Fondo] Falló cargando el fondo masivo: {e}")
+        bg_espacial = pygame.Surface((WIDTH, HEIGHT))
+        bg_espacial.fill((40, 10, 60))
+
     rng = random.Random(101)
     
-    # 1. Plataformas (Lista masiva pre-ordenada por X)
+    # 1. Plataformas Universales (Balcones Físicos Object-Oriented)
     platforms = []
     pos_x = 240
     while pos_x < 31200:
-        pw = rng.randint(200, 600)
-        py = GROUND_Y - rng.randint(150, 400)
-        platforms.append(pygame.Rect(pos_x, py, pw, 48))
-        pos_x += pw + rng.randint(150, 400) # gap aleatorio hasta la siguiente
+        pw_gap = rng.randint(180, 400) # Hueco al siguiente
+        py = GROUND_Y - rng.randint(120, 450) # Elevaciones drásticas para ambiente espacial flotante
+        texture_idx = rng.randint(0, 5) # Texturas 0-5 (balcones 1 a 6)
+        
+        # Generar plataforma inteligente
+        new_plat = Platform(pos_x, py, texture_idx)
+        platforms.append(new_plat)
+        pos_x += new_plat.width + pw_gap
         
     platforms_x = [p.x for p in platforms] # Lista K-V para bisect rápido
 
-    # 2. Texturas Cacheadas (Suelo y Balcones)
-    try:
-        raw_piso = pygame.image.load("components/piso.png").convert_alpha()
-        pw_piso, ph_piso = raw_piso.get_size()
-        target_h = HEIGHT - (GROUND_Y - 40) + 10
-        piso_stretched = pygame.transform.scale(raw_piso, (pw_piso, target_h))
-    except:
-        pw_piso, piso_stretched = 356, None
+    # Suelo Global (Un único chunk imaginario ancho para caer)
+    ground_chunks = [pygame.Rect(-1000, GROUND_Y, 40000, 100)]
+    ground_xs = [-1000]
 
-    try:
-        raw_balcon = pygame.image.load("components/balcon.png").convert_alpha()
-        bh_target = 76
-        aspect_balcon = raw_balcon.get_width() / raw_balcon.get_height()
-        bw_balcon = int(bh_target * aspect_balcon)
-        balcon_scaled = pygame.transform.scale(raw_balcon, (bw_balcon, bh_target))
-    except:
-        bw_balcon, balcon_scaled = 100, None
-
-    # 3. Chunks de Suelo Lineal
-    ground_chunks = []
-    gx = -60
-    while gx < 31500:
-        y_jitter = rng.randint(-8, 4)
-        ground_chunks.append(pygame.Rect(gx, GROUND_Y - 40 + y_jitter, pw_piso, target_h))
-        gx += (pw_piso - 10)
-    ground_xs = [g.x for g in ground_chunks]
-
-    # 4. Peligros, Enemigos y Meta (Fase 2)
+    # 4. Peligros y Enemigos 
     LEVEL_END_X = 31000
     victory = False
 
-    hazards = []
+    enemies = []
+
+    
+    # Spawn de Tiradoras Estáticas (Reemplazo de Hazards)
     hx = 1200
     while hx < LEVEL_END_X - 1000:
-        hw = rng.randint(60, 160)
-        hazards.append(pygame.Rect(hx, GROUND_Y - 20, hw, 30))
+        enemies.append(ShooterFlower(hx, GROUND_Y))
         hx += rng.randint(800, 2500)
-    hazards_x = [h.x for h in hazards]
 
-    enemies = []
+    # Spawn Dinámico de Caminantes y Voladoras
     ex = 1000
     while ex < LEVEL_END_X - 1000:
-        enemies.append(Enemy(ex, GROUND_Y))
-        ex += rng.randint(600, 1500)
-        # 50% de probabilidad de generar otro sobre una plataforma aleatoria
-        if rng.random() > 0.5:
+        flight_y = GROUND_Y - rng.randint(150, 450)
+        enemies.append(GargoyleEnemy(ex, flight_y))
+        ex += rng.randint(700, 1600)
+        
+        # Añadir caminantes en plataformas
+        if rng.random() > 0.4:
             plat = rng.choice(platforms)
-            if plat.x > 1000: # Evitar poner cerca del spawn
-                enemies.append(Enemy(plat.centerx, plat.top))
+            if plat.x > 1000:
+                enemies.append(FlowerEnemy(plat.centerx, plat.top))
+                
+    enemy_projectiles = []
 
-    # ── PRE-RENDER CACHE (Parallax Layers) ────────────────────────────────────
-    bg_sky     = build_background(WIDTH, HEIGHT, GROUND_Y)
-    bg_trees   = build_trees_layer(WIDTH, HEIGHT, GROUND_Y)
+    # ── PRE-RENDER CACHE ────────────────────────────────────
     hud_bg     = build_hud_bg()
+    
+    # ── HUD Text Cache ──────────────────────────────────────
+    hud_cache = {"last_command": None, "last_color": None, "shadow_surf": None, "cmd_surf": None}
+
+    # ── Cache del Overlay de Pausa ──────────────────────────
+    pause_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    pause_overlay.fill((0, 0, 0, 100))
+    try:
+        f_pause = pygame.font.SysFont("Consolas", 60, bold=True)
+    except:
+        f_pause = pygame.font.Font(None, 80)
+    lbl_pause = f_pause.render("PAUSA", True, (255, 255, 255))
+    pause_overlay.blit(lbl_pause, (WIDTH // 2 - lbl_pause.get_width() // 2, HEIGHT // 2 - lbl_pause.get_height() // 2))
 
     # Variables de Cámara
     camera_x = 0
@@ -626,6 +772,7 @@ def main():
     cmd_color     = C_CMD_IDLE
     last_cmd_time = 0.0
     lives         = MAX_LIVES
+    paused        = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # MAIN ENGINE LOOP
@@ -639,139 +786,129 @@ def main():
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
+                if event.key == pygame.K_SPACE:
+                    paused = not paused
 
-        # ── Consumo de cola: UN comando por frame ─────────────────────────────
-        try:
-            raw_action    = cmd_queue.get_nowait().lower().strip(".,!? ¡¿")
-            tokens        = set(raw_action.split())
-            last_command  = f"  {raw_action.upper()}"
-            cmd_color     = C_CMD_ACTIVE
-            last_cmd_time = time.time()
+        if not paused:
+            # ── Consumo de cola: UN comando por frame ─────────────────────────────
+            try:
+                raw_action    = cmd_queue.get_nowait().lower().strip(".,!? ¡¿")
+                tokens        = set(raw_action.split())
+                last_command  = f"  {raw_action.upper()}"
+                cmd_color     = C_CMD_ACTIVE
+                last_cmd_time = time.time()
 
-            # Prioridad: STOP > ATTACK > RUN > JUMP
-            if   tokens & STOP_SET:
+                # Prioridad: STOP > ATTACK > RUN > JUMP
+                if   tokens & STOP_SET:
+                    player.stop()
+                elif tokens & ATTACK_SET:
+                    player.attack()
+                elif tokens & RUN_SET:
+                    player.run()
+                elif tokens & JUMP_SET:
+                    player.queue_jump()
+            except multiprocessing.queues.Empty:
+                pass
+            except Exception as e:
+                print(f"[Engine] Error en cola: {e}")
+
+            # ── Fade del color del comando tras el debounce ───────────────────────
+            if time.time() - last_cmd_time > DEBOUNCE_SECS:
+                cmd_color = C_CMD_IDLE
+
+            # ── SISTEMA DE CÁMARA (SCROLLING LINEAL) ──────────────────────────────
+            camera_x = max(0, player.rect.x - (WIDTH // 2 - 100))
+
+            # ── FRUSTUM CULLING (Cálculo de Plataformas y Suelo Visibles) ─────────
+            # Buscar el punto de inicio en el array ordenado
+            idx_start_plat = bisect.bisect_left(platforms_x, camera_x - 1000)
+            idx_end_plat   = bisect.bisect_right(platforms_x, camera_x + WIDTH)
+            visible_platforms = platforms[max(0, idx_start_plat):idx_end_plat]
+
+            idx_start_gnd = bisect.bisect_left(ground_xs, camera_x - 4000)
+            idx_end_gnd   = bisect.bisect_right(ground_xs, camera_x + WIDTH)
+            visible_grounds = ground_chunks[max(0, idx_start_gnd):idx_end_gnd]
+
+            # Culling Enemy Projectiles (Memory Leak Prevention)
+            for ep in enemy_projectiles[:]:
+                ep.update()
+                hit_plat = ep.rect.collidelist(visible_platforms) != -1
+                out_of_bounds = ep.rect.x < camera_x - 100 or ep.rect.x > camera_x + WIDTH + 100
+                hit_player = ep.rect.colliderect(player.rect)
+                
+                if hit_player:
+                    if player.take_damage(): lives -= 1
+                if hit_plat or out_of_bounds or hit_player:
+                    if ep in enemy_projectiles: enemy_projectiles.remove(ep)
+            
+            # ── INTERACCIONES Y LÓGICA (Solo si no hemos ganado) ──────────────────
+            if player.rect.centerx >= LEVEL_END_X and not victory:
+                victory = True
                 player.stop()
-            elif tokens & ATTACK_SET:
-                player.attack()
-            elif tokens & RUN_SET:
-                player.run()
-            elif tokens & JUMP_SET:
-                player.queue_jump()
-        except multiprocessing.queues.Empty:
-            pass
-        except Exception as e:
-            print(f"[Engine] Error en cola: {e}")
 
-        # ── Fade del color del comando tras el debounce ───────────────────────
-        if time.time() - last_cmd_time > DEBOUNCE_SECS:
-            cmd_color = C_CMD_IDLE
+            if not victory:
+                # Lógica de Enemigos Polimórficos
+                for e in enemies[:]:
+                    if camera_x - 200 < e.rect.x < camera_x + WIDTH + 200:
+                        e.update(visible_platforms=visible_platforms, player_x=player.rect.centerx, enemy_projectiles=enemy_projectiles)
+                        
+                        # Colisión Jugador vs Enemigo
+                        if e.rect.colliderect(player.rect):
+                            if player.take_damage():
+                                lives -= 1
+                        
+                        # Colisión Proyectil vs Enemigo
+                        for p in player.projectiles[:]:
+                            if p.rect.colliderect(e.rect):
+                                if p in player.projectiles: player.projectiles.remove(p)
+                                if e in enemies: enemies.remove(e)
 
-        # ── SISTEMA DE CÁMARA (SCROLLING LINEAL) ──────────────────────────────
-        camera_x = max(0, player.rect.x - (WIDTH // 2 - 100))
+                # Mantenimiento de Proyectiles del Jugador
+                for p in player.projectiles[:]:
+                    hit_plat = p.rect.collidelist(visible_platforms) != -1
+                    out_of_bounds = p.rect.x < camera_x - 300 or p.rect.x > camera_x + WIDTH + 300
+                    if hit_plat or out_of_bounds:
+                        if p in player.projectiles: player.projectiles.remove(p)
+                        
+                # Update físico principal del jugador
+                player.update(visible_platforms)
+                if lives <= 0:
+                    pass # Aquí iría lógica de GameOver. Por ahora se quedará vivo a 0.
 
-        # ── FRUSTUM CULLING (Cálculo de Plataformas y Suelo Visibles) ─────────
-        # Buscar el punto de inicio en el array ordenado
-        idx_start_plat = bisect.bisect_left(platforms_x, camera_x - 1000)
-        idx_end_plat   = bisect.bisect_right(platforms_x, camera_x + WIDTH)
-        visible_platforms = platforms[max(0, idx_start_plat):idx_end_plat]
-
-        idx_start_gnd = bisect.bisect_left(ground_xs, camera_x - pw_piso)
-        idx_end_gnd   = bisect.bisect_right(ground_xs, camera_x + WIDTH)
-        visible_grounds = ground_chunks[max(0, idx_start_gnd):idx_end_gnd]
-
-        # Culling Hazards
-        idx_start_haz = bisect.bisect_left(hazards_x, camera_x - 500)
-        idx_end_haz   = bisect.bisect_right(hazards_x, camera_x + WIDTH)
-        visible_hazards = hazards[max(0, idx_start_haz):idx_end_haz]
+        # ── RENDER (FONDO ESPACIAL PANORÁMICO PARALLAX) ───────────────────────
+        # Limpiar ghosting previo a dibujar
+        screen.fill((10, 5, 20)) 
         
-        # ── INTERACCIONES Y LÓGICA (Solo si no hemos ganado) ──────────────────
-        if player.rect.centerx >= LEVEL_END_X and not victory:
-            victory = True
-            player.stop()
-
-        if not victory:
-            # Lógica de Enemigos y Proyectiles
-            for e in enemies[:]:
-                if camera_x - 200 < e.rect.x < camera_x + WIDTH + 200:
-                    e.update(visible_platforms)
-                    
-                    # Colisión Jugador vs Enemigo
-                    if e.rect.colliderect(player.rect):
-                        if player.take_damage():
-                            lives -= 1
-                    
-                    # Colisión Proyectil vs Enemigo
-                    for p in player.projectiles[:]:
-                        if p.rect.colliderect(e.rect):
-                            if p in player.projectiles: player.projectiles.remove(p)
-                            if e in enemies: enemies.remove(e)
-
-            # Colisión con Hazards estáticos
-            for haz in visible_hazards:
-                if player.rect.colliderect(haz):
-                    if player.take_damage():
-                        lives -= 1
-
-            # Mantenimiento de Proyectiles (Choques con terreno o fuera de cámara)
-            for p in player.projectiles[:]:
-                hit_plat = any(p.rect.colliderect(plat) for plat in visible_platforms)
-                out_of_bounds = p.rect.x < camera_x - 300 or p.rect.x > camera_x + WIDTH + 300
-                if hit_plat or out_of_bounds:
-                    if p in player.projectiles: player.projectiles.remove(p)
-                    
-            # Update físico principal del jugador
-            player.update(visible_platforms)
-            if lives <= 0:
-                pass # Aquí iría lógica de GameOver. Por ahora se quedará vivo a 0.
-
-        # ── RENDER (PARALLAX + CULLING) ───────────────────────────────────────
-        screen.fill(C_HUD_BG) # 1. Limpieza Absoluta de Pantalla
+        bg_w = bg_espacial.get_width()
+        # Módulo corregido: Asegura que el valor sea estrictamente negativo para desplazar hacia la izquierda
+        bg_scroll = -((camera_x * 0.15) % bg_w)
         
-        # 2. Fondo de Cielo Infinito (0.1x Parallax continuo modular)
-        bg_x = -(camera_x * 0.1) % WIDTH
-        screen.blit(bg_sky, (bg_x, 0))
-        screen.blit(bg_sky, (bg_x - WIDTH, 0))
-
-        # 3. Bosque Infinito (Capa Media 0.7x Parallax continuo modular)
-        trees_x = -(camera_x * 0.7) % WIDTH
-        screen.blit(bg_trees, (trees_x, 0))
-        screen.blit(bg_trees, (trees_x - WIDTH, 0))
+        screen.blit(bg_espacial, (bg_scroll, 0))
+        # Dibujo de continuación asegurando cubrir la resolución entera WIDTH
+        if bg_scroll + bg_w < WIDTH:
+            screen.blit(bg_espacial, (bg_scroll + bg_w, 0))
 
         # 3. Suelo Visible (Espacio Físico Local)
-        # Capa rosa trasera subyacente para huecos de rebote o parpadeo visual
-        pygame.draw.rect(screen, (200, 80, 140), (0, GROUND_Y + 20, WIDTH, HEIGHT - GROUND_Y))
+        # Render invisible/transparente. La imagen Fondo provee el suelo visual.
+        # ...pero lo podemos visualizar si no existe bg_espacial
         
-        for g_chunk in visible_grounds:
-            if piso_stretched:
-                screen.blit(piso_stretched, (g_chunk.x - camera_x, g_chunk.y))
-
-        # 4. Plataformas Flotantes Visibles (Balcones Teselados)
+        # 4. Plataformas Flotantes Visibles (Balcones de Pool)
         for plat in visible_platforms:
-            if balcon_scaled:
-                # Tiling del balcon visualmente para abarcar toda la plataforma
-                tx = plat.x
-                while tx < plat.right:
-                    screen.blit(balcon_scaled, (tx - camera_x, plat.y - 12))
-                    tx += (bw_balcon - 2)
-            else:
-                pygame.draw.rect(screen, C_PLATFORM, 
-                                 (plat.x - camera_x, plat.y, plat.width, plat.height), 
-                                 border_radius=4)
+            screen.blit(plat.image, (plat.x - camera_x, plat.y))
                                  
-        # 5. Peligros / Hazards
-        for haz in visible_hazards:
-            # Dibujo de fluido tóxico simplificado
-            pygame.draw.rect(screen, (50, 255, 50), (haz.x - camera_x, haz.y, haz.width, haz.height), border_radius=3)
-            
-        # 6. Enemigos
+        # (Peligos/Hazards estáticos reemplazados por ShooterFlower)
+        
+        # 6. Enemigos (Renderizado con IA y Flip)
         for e in enemies:
             if camera_x - 200 < e.rect.x < camera_x + WIDTH + 200:
-                screen.blit(e.image, (e.rect.x - camera_x, e.rect.y))
+                e.draw(screen, camera_x)
                 
         # 7. Proyectiles
         for p in player.projectiles:
             screen.blit(p.image, (p.rect.x - camera_x, p.rect.y))
             
+        for ep in enemy_projectiles:
+            screen.blit(ep.image, (ep.rect.x - camera_x, ep.rect.y))
         # 8. Meta
         pygame.draw.rect(screen, (255, 215, 0), (LEVEL_END_X - camera_x, GROUND_Y - 300, 40, 300))
 
@@ -801,9 +938,13 @@ def main():
             lbl_vic = f_vic.render("NIVEL COMPLETADO", True, (255, 215, 0))
             screen.blit(lbl_vic, (WIDTH // 2 - lbl_vic.get_width() // 2, vy + vh // 2 - lbl_vic.get_height() // 2))
 
-        # HUD dinámico (solo texto + barra cambian cada frame)
+        # Capa UI: Cartel Pausa
+        if paused:
+            screen.blit(pause_overlay, (0, 0))
+
+        # HUD dinámico (solo texto blit o render si cambia el caché)
         draw_hud(screen, hud_bg, font_sm, font_md,
-                 last_command, cmd_color, last_cmd_time, DEBOUNCE_SECS, lives)
+                 last_command, cmd_color, last_cmd_time, DEBOUNCE_SECS, lives, hud_cache)
 
         pygame.display.flip()
         clock.tick(FPS)
